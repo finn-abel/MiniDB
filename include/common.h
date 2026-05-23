@@ -22,9 +22,19 @@
  *   Maximum number of columns allowed in a table.
  */
 #define PAGE_SIZE 4096
+/*
+ * Limits used throughout the database.
+ */
 #define MAX_TABLE_NAME 64
 #define MAX_COLUMN_NAME 64
 #define MAX_COLUMNS 32
+
+/*
+ * Max database path length.
+ *
+ * For now, MiniDB "opens" a DB by opening or creating a folder.
+ */
+#define MAX_DB_PATH 256
 
 /*
  * Maximum length of one input line in the shell.

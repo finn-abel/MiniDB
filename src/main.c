@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 
 #include "common.h"
+#include "db.h"
 
 static void print_prompt(void) {
     printf("minidb > ");
@@ -24,8 +24,10 @@ static void trim_newline(char *input) {
 }
 
 /*
- * Handles shell-level commands.
- * These are not SQL commands, so they should not go to the parser later.
+ * Handles MiniDB shell commands.
+ *
+ * These are called "meta-commands" because they control the shell itself.
+ * They are not SQL statements and should not be sent to the SQL parser later.
  */
 static DBStatus handle_meta_command(const char *input, bool *should_exit) {
     if (strcmp(input, ".exit") == 0) {
@@ -42,8 +44,20 @@ static DBStatus handle_meta_command(const char *input, bool *should_exit) {
 }
 
 int main(void) {
+    DB db;
     char input[MAX_INPUT_SIZE];
     bool should_exit = false;
+
+    DBStatus open_status = db_open(&db, "mydb");
+
+    if (open_status != DB_OK) {
+        fprintf(stderr, "Failed to open database.\n");
+        return 1;
+    }
+
+    printf("MiniDB shell\n");
+    printf("Opened database at: %s\n", db.path);
+    printf("Type .help for help.\n");
 
     while (!should_exit) {
         print_prompt();
@@ -55,25 +69,37 @@ int main(void) {
 
         trim_newline(input);
 
-        if (strlen(input) == 0) {
+        /*
+         * Ignore empty input.
+         */
+        if (input[0] == '\0') {
             continue;
         }
 
         /*
-         * Meta commands belong to the shell.
-         * SQL-like input will be handled by the parser in a later step.
+         * Commands beginning with '.' are meta-commands.
          */
         if (input[0] == '.') {
             DBStatus status = handle_meta_command(input, &should_exit);
 
             if (status != DB_OK) {
-                printf("Unknown command: %s\n", input);
+                printf("Unrecognized command: %s\n", input);
             }
 
             continue;
         }
 
-        printf("SQL execution is not implemented yet: %s\n", input);
+        /*
+         * SQL support comes later.
+         */
+        printf("SQL support has not been implemented yet.\n");
+    }
+
+    DBStatus close_status = db_close(&db);
+
+    if (close_status != DB_OK) {
+        fprintf(stderr, "Warning: database did not close cleanly.\n");
+        return 1;
     }
 
     return 0;

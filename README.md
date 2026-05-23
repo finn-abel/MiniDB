@@ -1,2 +1,2 @@
 # MiniDB-C
-MiniDB: A Simple Relational Database Built in C
+MiniDB: A Simple Self-contained Relational Database Built in C
