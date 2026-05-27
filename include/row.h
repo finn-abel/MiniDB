@@ -54,4 +54,22 @@ const Value *row_get_value_const(const Row *row, uint16_t index);
  */
 void row_print(const Row *row, FILE *out);
 
+/*
+ * Converts a row into a newly allocated byte buffer.
+ *
+ * The caller owns out_bytes and must free it.
+ *
+ * out_len stores the number of bytes written.
+ */
+DBStatus row_serialize(Row *row, uint8_t **out_bytes, uint32_t *out_len);
+
+/*
+ * Converts a byte buffer back into a Row.
+ *
+ * The output row owns its values after this succeeds.
+ * 
+ * The caller must later call row_free on out_row.
+ */
+DBStatus row_deserialize(uint8_t *bytes, uint32_t len, Row *out_row);
+
 #endif

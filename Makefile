@@ -8,7 +8,7 @@ TARGET = MiniDB
 SRC = src/main.c src/db.c src/value.c src/row.c
 
 # Add test source files here.
-TEST_SRC = tests/test_value.c tests/test_row.c
+TEST_SRC = tests/test_value.c tests/test_row.c tests/test_row_serialization.c
 
 OBJ = $(SRC:.c=.o)
 
