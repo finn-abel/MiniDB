@@ -4,28 +4,43 @@ INCLUDES = -Iinclude
 
 TARGET = MiniDB
 
-SRC = src/main.c src/db.c src/value.c
+# Add normal project source files here.
+SRC = src/main.c src/db.c src/value.c src/row.c
+
+# Add test source files here.
+TEST_SRC = tests/test_value.c tests/test_row.c
+
 OBJ = $(SRC:.c=.o)
 
-TEST_TARGETS = test_value
-TEST_OBJ = tests/test_value.o
+# Source files needed for tests should not include src/main.c,
+# because each test file has its own main function.
+TEST_SUPPORT_SRC = $(filter-out src/main.c, $(SRC))
+TEST_SUPPORT_OBJ = $(TEST_SUPPORT_SRC:.c=.o)
+
+TEST_TARGETS = $(TEST_SRC:tests/%.c=%)
+TEST_OBJ = $(TEST_SRC:.c=.o)
 
 all: $(TARGET)
 
 $(TARGET): $(OBJ)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $(TARGET) $(OBJ)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^
 
 %.o: %.c
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
-test_value: tests/test_value.o src/value.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o test_value tests/test_value.o src/value.o
+%: tests/%.o $(TEST_SUPPORT_OBJ)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^
 
-test: test_value
-	./test_value
+test: $(TEST_TARGETS)
+	@for test in $(TEST_TARGETS); do \
+		echo "Running $$test..."; \
+		./$$test; \
+		echo ""; \
+	done
 
 clean:
-	rm -f $(OBJ) $(TARGET) $(TEST_OBJ) $(TEST_TARGETS)
+	rm -f $(OBJ) $(TEST_SUPPORT_OBJ) $(TEST_OBJ) $(TARGET) $(TEST_TARGETS)
+	rm -rf *.dSYM tests/*.dSYM
 
 run: $(TARGET)
 	./$(TARGET)
