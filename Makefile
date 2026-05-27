@@ -5,10 +5,10 @@ INCLUDES = -Iinclude
 TARGET = MiniDB
 
 # Add normal project source files here.
-SRC = src/main.c src/db.c src/value.c src/row.c
+SRC = src/main.c src/db.c src/value.c src/row.c src/rid.c
 
 # Add test source files here.
-TEST_SRC = tests/test_value.c tests/test_row.c tests/test_row_serialization.c
+TEST_SRC = tests/test_value.c tests/test_row.c tests/test_row_serialization.c tests/test_rid.c
 
 OBJ = $(SRC:.c=.o)
 
