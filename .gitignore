@@ -1,0 +1,20 @@
+# Build artifacts
+*.o
+*.out
+*.dSYM/
+
+# Executables
+MiniDB
+test_value
+
+# Runtime database folders/files
+mydb/
+
+# Editor/OS files
+.DS_Store
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.log
