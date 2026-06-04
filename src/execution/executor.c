@@ -35,76 +35,6 @@ typedef struct {
 } DeleteContext;
 
 /*
- * Evaluates a simple WHERE condition against one row.
- *
- * The binder already checked that the condition column exists and that the
- * literal type is comparable. The executor repeats the column lookup to find
- * the row value by position.
- */
-static DBStatus executor_condition_matches(
-    const Schema *schema,
-    const Row *row,
-    const WhereCondition *condition,
-    bool *out_matches
-) {
-    uint16_t column_index = 0;
-    int compare_result = 0;
-
-    if (schema == NULL || row == NULL || condition == NULL || out_matches == NULL) {
-        return DB_ERROR;
-    }
-
-    DBStatus status = schema_get_column_index(
-        schema,
-        condition->column_name,
-        &column_index
-    );
-
-    if (status != DB_OK) {
-        return status;
-    }
-
-    const Value *row_value = row_get_value_const(row, column_index);
-
-    if (row_value == NULL) {
-        return DB_ERROR;
-    }
-
-    status = value_compare(row_value, &condition->value, &compare_result);
-
-    if (status != DB_OK) {
-        return status;
-    }
-
-    /*
-     * value_compare gives a normalized comparison result. The SQL operator
-     * decides how that result maps to a boolean match.
-     */
-    switch (condition->operator_type) {
-        case SQL_OPERATOR_EQUAL:
-            *out_matches = compare_result == 0;
-            return DB_OK;
-        case SQL_OPERATOR_NOT_EQUAL:
-            *out_matches = compare_result != 0;
-            return DB_OK;
-        case SQL_OPERATOR_GREATER:
-            *out_matches = compare_result > 0;
-            return DB_OK;
-        case SQL_OPERATOR_LESS:
-            *out_matches = compare_result < 0;
-            return DB_OK;
-        case SQL_OPERATOR_GREATER_EQUAL:
-            *out_matches = compare_result >= 0;
-            return DB_OK;
-        case SQL_OPERATOR_LESS_EQUAL:
-            *out_matches = compare_result <= 0;
-            return DB_OK;
-        default:
-            return DB_ERROR;
-    }
-}
-
-/*
  * Prints one value in shell result format.
  * Text values are printed without quotes for query output.
  */
@@ -220,9 +150,9 @@ static DBStatus executor_select_callback(const Row *row, RID rid, void *context)
     }
 
     if (select_context->plan->has_filter) {
-        DBStatus status = executor_condition_matches(
-            &select_context->table->schema,
+        DBStatus status = row_matches_condition(
             row,
+            &select_context->table->schema,
             &select_context->plan->filter.condition,
             &matches
         );
@@ -264,9 +194,9 @@ static DBStatus executor_delete_callback(const Row *row, RID rid, void *context)
     }
 
     if (delete_context->plan->has_condition) {
-        DBStatus status = executor_condition_matches(
-            &delete_context->table->schema,
+        DBStatus status = row_matches_condition(
             row,
+            &delete_context->table->schema,
             &delete_context->plan->condition,
             &matches
         );

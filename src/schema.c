@@ -193,6 +193,46 @@ DBStatus schema_validate_row(const Schema *schema, const Row *row) {
     return DB_OK;
 }
 
+DBStatus row_matches_condition(
+    const Row *row,
+    const Schema *schema,
+    const WhereCondition *condition,
+    bool *out_matches
+) {
+    uint16_t column_index = 0;
+
+    if (row == NULL || schema == NULL || condition == NULL || out_matches == NULL) {
+        return DB_ERROR;
+    }
+
+    /*
+     * Rows store values by position, while WHERE conditions name columns.
+     * The schema is the bridge between those two representations.
+     */
+    DBStatus status = schema_get_column_index(
+        schema,
+        condition->column_name,
+        &column_index
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    const Value *row_value = row_get_value_const(row, column_index);
+
+    if (row_value == NULL) {
+        return DB_ERROR;
+    }
+
+    return value_compare(
+        row_value,
+        condition->operator_type,
+        &condition->value,
+        out_matches
+    );
+}
+
 void schema_print(const Schema *schema, FILE *out) {
     if (schema == NULL || out == NULL) {
         return;

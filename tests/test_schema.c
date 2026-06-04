@@ -325,6 +325,112 @@ static void test_schema_validate_row_rejects_null_inputs(void) {
     row_free(&row);
 }
 
+static void test_row_matches_condition_int(void) {
+    Schema schema;
+    Row row;
+    WhereCondition condition;
+    bool matches = false;
+
+    assert(schema_init(&schema, "users") == DB_OK);
+    assert(schema_add_column(&schema, "id", VALUE_INT, true, true) == DB_OK);
+    assert(schema_add_column(&schema, "age", VALUE_INT, false, false) == DB_OK);
+
+    assert(row_create(&row, 2) == DB_OK);
+    row.values[0] = value_int(1);
+    row.values[1] = value_int(20);
+
+    memset(&condition, 0, sizeof(condition));
+    strcpy(condition.column_name, "age");
+    condition.operator_type = SQL_OPERATOR_GREATER;
+    condition.value = value_int(18);
+
+    assert(row_matches_condition(&row, &schema, &condition, &matches) == DB_OK);
+    assert(matches == true);
+
+    condition.operator_type = SQL_OPERATOR_LESS_EQUAL;
+
+    assert(row_matches_condition(&row, &schema, &condition, &matches) == DB_OK);
+    assert(matches == false);
+
+    row_free(&row);
+}
+
+static void test_row_matches_condition_text(void) {
+    Schema schema;
+    Row row;
+    WhereCondition condition;
+    bool matches = false;
+
+    assert(schema_init(&schema, "users") == DB_OK);
+    assert(schema_add_column(&schema, "name", VALUE_TEXT, false, false) == DB_OK);
+
+    assert(row_create(&row, 1) == DB_OK);
+    assert(value_text(&row.values[0], "Finn") == DB_OK);
+
+    memset(&condition, 0, sizeof(condition));
+    strcpy(condition.column_name, "name");
+    condition.operator_type = SQL_OPERATOR_EQUAL;
+    assert(value_text(&condition.value, "Finn") == DB_OK);
+
+    assert(row_matches_condition(&row, &schema, &condition, &matches) == DB_OK);
+    assert(matches == true);
+
+    condition.operator_type = SQL_OPERATOR_NOT_EQUAL;
+
+    assert(row_matches_condition(&row, &schema, &condition, &matches) == DB_OK);
+    assert(matches == false);
+
+    value_free(&condition.value);
+    row_free(&row);
+}
+
+static void test_row_matches_condition_missing_column(void) {
+    Schema schema;
+    Row row;
+    WhereCondition condition;
+    bool matches = false;
+
+    assert(schema_init(&schema, "users") == DB_OK);
+    assert(schema_add_column(&schema, "id", VALUE_INT, true, true) == DB_OK);
+
+    assert(row_create(&row, 1) == DB_OK);
+    row.values[0] = value_int(1);
+
+    memset(&condition, 0, sizeof(condition));
+    strcpy(condition.column_name, "age");
+    condition.operator_type = SQL_OPERATOR_EQUAL;
+    condition.value = value_int(20);
+
+    assert(row_matches_condition(&row, &schema, &condition, &matches) == DB_NOT_FOUND);
+
+    row_free(&row);
+}
+
+static void test_row_matches_condition_rejects_null_inputs(void) {
+    Schema schema;
+    Row row;
+    WhereCondition condition;
+    bool matches = false;
+
+    assert(schema_init(&schema, "users") == DB_OK);
+    assert(schema_add_column(&schema, "id", VALUE_INT, true, true) == DB_OK);
+
+    assert(row_create(&row, 1) == DB_OK);
+    row.values[0] = value_int(1);
+
+    memset(&condition, 0, sizeof(condition));
+    strcpy(condition.column_name, "id");
+    condition.operator_type = SQL_OPERATOR_EQUAL;
+    condition.value = value_int(1);
+
+    assert(row_matches_condition(NULL, &schema, &condition, &matches) == DB_ERROR);
+    assert(row_matches_condition(&row, NULL, &condition, &matches) == DB_ERROR);
+    assert(row_matches_condition(&row, &schema, NULL, &matches) == DB_ERROR);
+    assert(row_matches_condition(&row, &schema, &condition, NULL) == DB_ERROR);
+
+    row_free(&row);
+}
+
 static void test_schema_print_empty_schema(void) {
     Schema schema;
 
@@ -399,6 +505,10 @@ int main(void) {
     test_schema_validate_row_rejects_null_text_when_not_null();
     test_schema_validate_row_allows_null_text_when_nullable();
     test_schema_validate_row_rejects_null_inputs();
+    test_row_matches_condition_int();
+    test_row_matches_condition_text();
+    test_row_matches_condition_missing_column();
+    test_row_matches_condition_rejects_null_inputs();
     test_schema_print_empty_schema();
     test_schema_print_with_columns();
     test_schema_print_null_inputs();

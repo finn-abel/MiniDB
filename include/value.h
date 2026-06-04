@@ -45,6 +45,34 @@ typedef struct {
 } Value;
 
 /*
+ * SqlOperator represents the comparison operators supported in WHERE clauses.
+ *
+ * The parser stores these in conditions, while value_compare uses them to
+ * decide how a raw value ordering becomes true or false.
+ */
+typedef enum {
+    SQL_OPERATOR_EQUAL,
+    SQL_OPERATOR_NOT_EQUAL,
+    SQL_OPERATOR_GREATER,
+    SQL_OPERATOR_LESS,
+    SQL_OPERATOR_GREATER_EQUAL,
+    SQL_OPERATOR_LESS_EQUAL
+} SqlOperator;
+
+/*
+ * WhereCondition stores one simple condition:
+ *   column_name operator value
+ *
+ * Rows do not know column names, so schema/execution code uses the column name
+ * to find the matching value position before calling value_compare.
+ */
+typedef struct {
+    char column_name[MAX_COLUMN_NAME];
+    SqlOperator operator_type;
+    Value value;
+} WhereCondition;
+
+/*
  * Creates an integer value.
  */
 Value value_int(int32_t value);
@@ -76,17 +104,19 @@ void value_free(Value *value);
 void value_print(const Value *value, FILE *out);
 
 /*
- * Compares two values.
+ * Compares two values with a SQL-style operator.
  *
- * Returns:
- *   -1 if left < right
- *    0 if left == right
- *    1 if left > right
+ * Example:
+ *   value_compare(20, SQL_OPERATOR_GREATER, 18) writes true.
  *
  * If the two values have different types, returns DB_TYPE_ERROR.
- *
- * The comparison result is written into out_result.
+ * The boolean comparison result is written into out_matches.
  */
-DBStatus value_compare(const Value *left, const Value *right, int *out_result);
+DBStatus value_compare(
+    const Value *left,
+    SqlOperator operator_type,
+    const Value *right,
+    bool *out_matches
+);
 
 #endif

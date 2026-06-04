@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -105,40 +106,46 @@ static void test_value_print_null_inputs(void) {
 static void test_value_compare_int_less_than(void) {
     Value left = value_int(10);
     Value right = value_int(20);
-    int result = 0;
+    bool matches = true;
 
-    assert(value_compare(&left, &right, &result) == DB_OK);
-    assert(result == -1);
+    assert(value_compare(&left, SQL_OPERATOR_LESS, &right, &matches) == DB_OK);
+    assert(matches == true);
+
+    assert(value_compare(&left, SQL_OPERATOR_GREATER, &right, &matches) == DB_OK);
+    assert(matches == false);
 }
 
 static void test_value_compare_int_greater_than(void) {
     Value left = value_int(20);
     Value right = value_int(10);
-    int result = 0;
+    bool matches = false;
 
-    assert(value_compare(&left, &right, &result) == DB_OK);
-    assert(result == 1);
+    assert(value_compare(&left, SQL_OPERATOR_GREATER, &right, &matches) == DB_OK);
+    assert(matches == true);
 }
 
 static void test_value_compare_int_equal(void) {
     Value left = value_int(20);
     Value right = value_int(20);
-    int result = 0;
+    bool matches = false;
 
-    assert(value_compare(&left, &right, &result) == DB_OK);
-    assert(result == 0);
+    assert(value_compare(&left, SQL_OPERATOR_EQUAL, &right, &matches) == DB_OK);
+    assert(matches == true);
+
+    assert(value_compare(&left, SQL_OPERATOR_NOT_EQUAL, &right, &matches) == DB_OK);
+    assert(matches == false);
 }
 
 static void test_value_compare_text_less_than(void) {
     Value left;
     Value right;
-    int result = 0;
+    bool matches = false;
 
     assert(value_text(&left, "Apple") == DB_OK);
     assert(value_text(&right, "Banana") == DB_OK);
 
-    assert(value_compare(&left, &right, &result) == DB_OK);
-    assert(result == -1);
+    assert(value_compare(&left, SQL_OPERATOR_LESS, &right, &matches) == DB_OK);
+    assert(matches == true);
 
     value_free(&left);
     value_free(&right);
@@ -147,13 +154,13 @@ static void test_value_compare_text_less_than(void) {
 static void test_value_compare_text_greater_than(void) {
     Value left;
     Value right;
-    int result = 0;
+    bool matches = false;
 
     assert(value_text(&left, "Banana") == DB_OK);
     assert(value_text(&right, "Apple") == DB_OK);
 
-    assert(value_compare(&left, &right, &result) == DB_OK);
-    assert(result == 1);
+    assert(value_compare(&left, SQL_OPERATOR_GREATER, &right, &matches) == DB_OK);
+    assert(matches == true);
 
     value_free(&left);
     value_free(&right);
@@ -162,35 +169,55 @@ static void test_value_compare_text_greater_than(void) {
 static void test_value_compare_text_equal(void) {
     Value left;
     Value right;
-    int result = 0;
+    bool matches = false;
 
     assert(value_text(&left, "Finn") == DB_OK);
     assert(value_text(&right, "Finn") == DB_OK);
 
-    assert(value_compare(&left, &right, &result) == DB_OK);
-    assert(result == 0);
+    assert(value_compare(&left, SQL_OPERATOR_EQUAL, &right, &matches) == DB_OK);
+    assert(matches == true);
 
     value_free(&left);
     value_free(&right);
 }
 
+static void test_value_compare_inclusive_operators(void) {
+    Value left = value_int(20);
+    Value right = value_int(20);
+    bool matches = false;
+
+    assert(value_compare(&left, SQL_OPERATOR_GREATER_EQUAL, &right, &matches) == DB_OK);
+    assert(matches == true);
+
+    assert(value_compare(&left, SQL_OPERATOR_LESS_EQUAL, &right, &matches) == DB_OK);
+    assert(matches == true);
+}
+
 static void test_value_compare_rejects_null_inputs(void) {
     Value value = value_int(42);
-    int result = 0;
+    bool matches = false;
 
-    assert(value_compare(NULL, &value, &result) == DB_ERROR);
-    assert(value_compare(&value, NULL, &result) == DB_ERROR);
-    assert(value_compare(&value, &value, NULL) == DB_ERROR);
+    assert(value_compare(NULL, SQL_OPERATOR_EQUAL, &value, &matches) == DB_ERROR);
+    assert(value_compare(&value, SQL_OPERATOR_EQUAL, NULL, &matches) == DB_ERROR);
+    assert(value_compare(&value, SQL_OPERATOR_EQUAL, &value, NULL) == DB_ERROR);
+}
+
+static void test_value_compare_rejects_invalid_operator(void) {
+    Value left = value_int(42);
+    Value right = value_int(42);
+    bool matches = false;
+
+    assert(value_compare(&left, (SqlOperator)99, &right, &matches) == DB_ERROR);
 }
 
 static void test_value_compare_rejects_different_types(void) {
     Value left = value_int(42);
     Value right;
-    int result = 0;
+    bool matches = false;
 
     assert(value_text(&right, "Finn") == DB_OK);
 
-    assert(value_compare(&left, &right, &result) == DB_TYPE_ERROR);
+    assert(value_compare(&left, SQL_OPERATOR_EQUAL, &right, &matches) == DB_TYPE_ERROR);
 
     value_free(&right);
 }
@@ -212,7 +239,9 @@ int main(void) {
     test_value_compare_text_less_than();
     test_value_compare_text_greater_than();
     test_value_compare_text_equal();
+    test_value_compare_inclusive_operators();
     test_value_compare_rejects_null_inputs();
+    test_value_compare_rejects_invalid_operator();
     test_value_compare_rejects_different_types();
 
     printf("All value tests passed.\n");

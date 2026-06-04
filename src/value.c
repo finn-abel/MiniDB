@@ -63,7 +63,19 @@ void value_print(const Value *value, FILE *out) {
     }
 }
 
-DBStatus value_compare(const Value *left, const Value *right, int *out_result) {
+/*
+ * Produces a normalized ordering:
+ *   -1 for left < right
+ *    0 for left == right
+ *    1 for left > right
+ *
+ * value_compare then maps this ordering through a SQL operator.
+ */
+static DBStatus value_compare_ordering(
+    const Value *left,
+    const Value *right,
+    int *out_result
+) {
     if (left == NULL || right == NULL || out_result == NULL) {
         return DB_ERROR;
     }
@@ -101,4 +113,50 @@ DBStatus value_compare(const Value *left, const Value *right, int *out_result) {
     }
 
     return DB_ERROR;
+}
+
+DBStatus value_compare(
+    const Value *left,
+    SqlOperator operator_type,
+    const Value *right,
+    bool *out_matches
+) {
+    int compare_result = 0;
+
+    if (out_matches == NULL) {
+        return DB_ERROR;
+    }
+
+    DBStatus status = value_compare_ordering(left, right, &compare_result);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * The raw ordering is independent from SQL syntax. This switch is the
+     * single place where operators such as >= and != become boolean results.
+     */
+    switch (operator_type) {
+        case SQL_OPERATOR_EQUAL:
+            *out_matches = compare_result == 0;
+            return DB_OK;
+        case SQL_OPERATOR_NOT_EQUAL:
+            *out_matches = compare_result != 0;
+            return DB_OK;
+        case SQL_OPERATOR_GREATER:
+            *out_matches = compare_result > 0;
+            return DB_OK;
+        case SQL_OPERATOR_LESS:
+            *out_matches = compare_result < 0;
+            return DB_OK;
+        case SQL_OPERATOR_GREATER_EQUAL:
+            *out_matches = compare_result >= 0;
+            return DB_OK;
+        case SQL_OPERATOR_LESS_EQUAL:
+            *out_matches = compare_result <= 0;
+            return DB_OK;
+        default:
+            return DB_ERROR;
+    }
 }

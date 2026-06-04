@@ -82,6 +82,19 @@ DBStatus schema_get_column_type(
 DBStatus schema_validate_row(const Schema *schema, const Row *row);
 
 /*
+ * Checks whether a row satisfies one WHERE condition.
+ *
+ * The schema maps the condition's column name to the row value index, then the
+ * value layer performs the actual operator comparison.
+ */
+DBStatus row_matches_condition(
+    const Row *row,
+    const Schema *schema,
+    const WhereCondition *condition,
+    bool *out_matches
+);
+
+/*
  * Prints the schema in a readable format.
  * Example output: users (id INT, name TEXT, age INT)
  * This is mainly useful for debugging and later .schema output.

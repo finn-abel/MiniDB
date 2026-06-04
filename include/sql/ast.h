@@ -23,30 +23,6 @@ typedef enum {
 } StatementType;
 
 /*
- * SqlOperator represents the comparison operators supported in WHERE clauses.
- */
-typedef enum {
-    SQL_OPERATOR_EQUAL,
-    SQL_OPERATOR_NOT_EQUAL,
-    SQL_OPERATOR_GREATER,
-    SQL_OPERATOR_LESS,
-    SQL_OPERATOR_GREATER_EQUAL,
-    SQL_OPERATOR_LESS_EQUAL
-} SqlOperator;
-
-/*
- * WhereCondition stores one simple condition:
- *   column_name operator value
- *
- * Only one condition is supported for now.
- */
-typedef struct {
-    char column_name[MAX_COLUMN_NAME];
-    SqlOperator operator_type;
-    Value value;
-} WhereCondition;
-
-/*
  * CREATE TABLE table_name (...columns...)
  *
  * Column reuses the schema layer's column metadata. The AST only stores what
