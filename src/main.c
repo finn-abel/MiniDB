@@ -3,16 +3,19 @@
 
 #include "common.h"
 #include "db.h"
+#include "execution/executor.h"
+#include "execution/plan.h"
+#include "execution/planner.h"
+#include "sql/ast.h"
+#include "sql/binder.h"
+#include "sql/parser.h"
 
 static void print_prompt(void) {
-    printf("minidb > ");
+    /*
+     * Keep the prompt short because query output may print multiple rows.
+     */
+    printf("db > ");
     fflush(stdout);
-}
-
-static void print_help(void) {
-    printf("Supported commands:\n");
-    printf("  .help   Show this help message\n");
-    printf("  .exit   Exit the MiniDB shell\n");
 }
 
 static void trim_newline(char *input) {
@@ -24,23 +27,121 @@ static void trim_newline(char *input) {
 }
 
 /*
- * Handles MiniDB shell commands.
- *
- * These are called "meta-commands" because they control the shell itself.
- * They are not SQL statements and should not be sent to the SQL parser later.
+ * Prints a short shell-facing error.
+ * Internal layers return status codes; the CLI turns them into readable text.
  */
-static DBStatus handle_meta_command(const char *input, bool *should_exit) {
-    if (strcmp(input, ".exit") == 0) {
-        *should_exit = true;
-        return DB_OK;
+static void print_status_error(DBStatus status) {
+    if (status == DB_PARSE_ERROR) {
+        printf("Syntax error.\n");
+    } else if (status == DB_NOT_FOUND) {
+        printf("Not found.\n");
+    } else if (status == DB_FULL) {
+        printf("Database object is full.\n");
+    } else if (status == DB_TYPE_ERROR) {
+        printf("Type error.\n");
+    } else if (status == DB_IO_ERROR) {
+        printf("I/O error.\n");
+    } else {
+        printf("Error.\n");
+    }
+}
+
+/*
+ * Prints simple confirmations for statements whose executor does not produce
+ * row output.
+ */
+static void print_success_message(const Plan *plan) {
+    /*
+     * SELECT and meta commands may already print output during execution.
+     * Only mutating SQL statements get an extra confirmation line here.
+     */
+    if (plan->type == PLAN_CREATE_TABLE) {
+        printf("Table created.\n");
+    } else if (plan->type == PLAN_INSERT) {
+        printf("1 row inserted.\n");
+    } else if (plan->type == PLAN_DELETE) {
+        printf("Rows deleted.\n");
+    }
+}
+
+/*
+ * Runs one input line through the SQL pipeline:
+ * parser -> binder -> planner -> executor.
+ */
+static DBStatus execute_input(DB *db, const char *input, bool *should_exit) {
+    Statement statement;
+    BoundStatement bound;
+    Plan plan;
+    DBStatus status;
+
+    /*
+     * These structs may own heap memory after their init/build functions run.
+     * Starting them at zero makes cleanup safe on every exit path.
+     */
+    memset(&statement, 0, sizeof(Statement));
+    memset(&bound, 0, sizeof(BoundStatement));
+    memset(&plan, 0, sizeof(Plan));
+
+    /*
+     * Parser: input text -> syntax tree.
+     */
+    status = parser_parse(input, &statement);
+
+    if (status != DB_OK) {
+        return status;
     }
 
-    if (strcmp(input, ".help") == 0) {
-        print_help();
-        return DB_OK;
+    /*
+     * Binder: syntax tree -> catalog-checked statement.
+     */
+    status = binder_bind(db, &statement, &bound);
+
+    if (status != DB_OK) {
+        ast_statement_free(&statement);
+        return status;
     }
 
-    return DB_ERROR;
+    /*
+     * Planner: bound statement -> simple execution plan.
+     */
+    status = planner_create_plan(&bound, &plan);
+
+    if (status != DB_OK) {
+        binder_bound_statement_free(&bound);
+        ast_statement_free(&statement);
+        return status;
+    }
+
+    /*
+     * Executor: plan -> catalog/table/record operations.
+     * SELECT and meta commands write their output to stdout.
+     */
+    status = executor_execute(db, &plan, stdout);
+
+    if (status == DB_OK) {
+        print_success_message(&plan);
+
+        /*
+         * .exit still travels through the full meta-command pipeline, but the
+         * shell loop owns the decision to stop reading input.
+         */
+        if (
+            plan.type == PLAN_META_COMMAND &&
+            strcmp(plan.meta_command.command, ".exit") == 0
+        ) {
+            *should_exit = true;
+        }
+    }
+
+    /*
+     * Free in reverse pipeline order because later objects may own copies of
+     * earlier data.
+     */
+    plan_free(&plan);
+    binder_bound_statement_free(&bound);
+    ast_statement_free(&statement);
+
+    return status;
 }
 
 int main(void) {
@@ -62,6 +163,10 @@ int main(void) {
     while (!should_exit) {
         print_prompt();
 
+        /*
+         * EOF exits cleanly, which makes scripted input work:
+         * printf 'SELECT * FROM users;\n' | ./MiniDB
+         */
         if (fgets(input, sizeof(input), stdin) == NULL) {
             printf("\n");
             break;
@@ -76,23 +181,15 @@ int main(void) {
             continue;
         }
 
+        DBStatus status = execute_input(&db, input, &should_exit);
+
         /*
-         * Commands beginning with '.' are meta-commands.
+         * The lower layers report status only. The CLI owns user-facing error
+         * messages so engine code can stay UI-agnostic.
          */
-        if (input[0] == '.') {
-            DBStatus status = handle_meta_command(input, &should_exit);
-
-            if (status != DB_OK) {
-                printf("Unrecognized command: %s\n", input);
-            }
-
-            continue;
+        if (status != DB_OK) {
+            print_status_error(status);
         }
-
-        /*
-         * SQL support comes later.
-         */
-        printf("SQL support has not been implemented yet.\n");
     }
 
     DBStatus close_status = db_close(&db);

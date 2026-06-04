@@ -105,10 +105,64 @@ static DBStatus executor_condition_matches(
 }
 
 /*
- * Prints only the columns requested by a ProjectPlan.
+ * Prints one value in shell result format.
+ * Text values are printed without quotes for query output.
+ */
+static DBStatus executor_print_value_plain(const Value *value, FILE *out) {
+    if (value == NULL || out == NULL) {
+        return DB_ERROR;
+    }
+
+    if (value->type == VALUE_INT) {
+        fprintf(out, "%d", value->int_value);
+        return DB_OK;
+    }
+
+    if (value->type == VALUE_TEXT) {
+        fprintf(out, "%s", value->text_value);
+        return DB_OK;
+    }
+
+    return DB_TYPE_ERROR;
+}
+
+/*
+ * Prints all row values in shell result format:
+ *   1 | Finn | 20
  *
- * row_print expects a Row, so the executor builds a temporary projected row
- * that owns deep copies of any text values.
+ * This is intentionally separate from row_print, which remains a debug-style
+ * representation used by lower-level tests.
+ */
+static DBStatus executor_print_full_row(const Row *row, FILE *out) {
+    if (row == NULL || out == NULL) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < row->value_count; i++) {
+        const Value *value = row_get_value_const(row, i);
+
+        if (value == NULL) {
+            return DB_ERROR;
+        }
+
+        if (i > 0) {
+            fprintf(out, " | ");
+        }
+
+        DBStatus status = executor_print_value_plain(value, out);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    fprintf(out, "\n");
+
+    return DB_OK;
+}
+
+/*
+ * Prints only the columns requested by a ProjectPlan.
  */
 static DBStatus executor_print_projected_row(
     const Schema *schema,
@@ -116,54 +170,37 @@ static DBStatus executor_print_projected_row(
     const ProjectPlan *project,
     FILE *out
 ) {
-    Row projected;
-
     if (schema == NULL || row == NULL || project == NULL || out == NULL) {
         return DB_ERROR;
-    }
-
-    DBStatus status = row_create(&projected, project->column_count);
-
-    if (status != DB_OK) {
-        return status;
     }
 
     for (uint16_t i = 0; i < project->column_count; i++) {
         uint16_t column_index = 0;
 
-        status = schema_get_column_index(schema, project->columns[i], &column_index);
+        DBStatus status = schema_get_column_index(schema, project->columns[i], &column_index);
 
         if (status != DB_OK) {
-            row_free(&projected);
             return status;
         }
 
         const Value *source_value = row_get_value_const(row, column_index);
 
         if (source_value == NULL) {
-            row_free(&projected);
             return DB_ERROR;
         }
 
-        if (source_value->type == VALUE_INT) {
-            projected.values[i] = value_int(source_value->int_value);
-        } else if (source_value->type == VALUE_TEXT) {
-            status = value_text(&projected.values[i], source_value->text_value);
+        if (i > 0) {
+            fprintf(out, " | ");
+        }
 
-            if (status != DB_OK) {
-                row_free(&projected);
-                return status;
-            }
-        } else {
-            row_free(&projected);
-            return DB_TYPE_ERROR;
+        status = executor_print_value_plain(source_value, out);
+
+        if (status != DB_OK) {
+            return status;
         }
     }
 
-    row_print(&projected, out);
     fprintf(out, "\n");
-
-    row_free(&projected);
 
     return DB_OK;
 }
@@ -211,10 +248,7 @@ static DBStatus executor_select_callback(const Row *row, RID rid, void *context)
         );
     }
 
-    row_print(row, select_context->out);
-    fprintf(select_context->out, "\n");
-
-    return DB_OK;
+    return executor_print_full_row(row, select_context->out);
 }
 
 /*

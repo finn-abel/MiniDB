@@ -93,7 +93,7 @@ static void test_executor_insert_and_select_all(void) {
     execute_sql(&db, "SELECT * FROM users;", out);
 
     rewind(out);
-    assert_next_line(out, "[1, \"Finn\", 20]\n");
+    assert_next_line(out, "1 | Finn | 20\n");
     assert(fgetc(out) == EOF);
     assert(fclose(out) == 0);
 
@@ -118,7 +118,7 @@ static void test_executor_select_with_filter_and_project(void) {
     execute_sql(&db, "SELECT name, age FROM users WHERE age > 18;", out);
 
     rewind(out);
-    assert_next_line(out, "[\"Finn\", 20]\n");
+    assert_next_line(out, "Finn | 20\n");
     assert(fgetc(out) == EOF);
     assert(fclose(out) == 0);
 
@@ -144,7 +144,7 @@ static void test_executor_delete_with_condition(void) {
     execute_sql(&db, "SELECT * FROM users;", out);
 
     rewind(out);
-    assert_next_line(out, "[2, \"Alex\", 17]\n");
+    assert_next_line(out, "2 | Alex | 17\n");
     assert(fgetc(out) == EOF);
     assert(fclose(out) == 0);
 
