@@ -1,24 +1,72 @@
 #include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 
+#include "catalog.h"
+#include "common.h"
 #include "db.h"
 
-static bool path_exists(const char *path) {
-    struct stat st;
-    return stat(path, &st) == 0;
-}
-
-static bool path_is_directory(const char *path) {
-    struct stat st;
-
-    if (stat(path, &st) != 0) {
-        return false;
+static DBStatus db_create_dir_if_needed(const char *path) {
+    if (path == NULL) {
+        return DB_ERROR;
     }
 
-    return S_ISDIR(st.st_mode);
+    struct stat info;
+
+    /*
+     * If the path already exists, make sure it is a directory.
+     */
+    if (stat(path, &info) == 0) {
+        if (S_ISDIR(info.st_mode)) {
+            return DB_OK;
+        }
+
+        return DB_ERROR;
+    }
+
+    /*
+     * If stat failed for a reason other than "does not exist",
+     * treat it as an I/O error.
+     */
+    if (errno != ENOENT) {
+        return DB_IO_ERROR;
+    }
+
+    /*
+     * Create the missing directory.
+     */
+    if (mkdir(path, 0755) != 0) {
+        return DB_IO_ERROR;
+    }
+
+    return DB_OK;
+}
+
+static DBStatus db_create_tables_dir(const DB *db) {
+    if (db == NULL) {
+        return DB_ERROR;
+    }
+
+    char tables_path[MAX_DB_PATH];
+
+    /*
+     * Table files live inside:
+     * mydb/tables/
+     */
+    int written = snprintf(
+        tables_path,
+        sizeof(tables_path),
+        "%s/tables",
+        db->path
+    );
+
+    if (written < 0 || written >= (int)sizeof(tables_path)) {
+        return DB_ERROR;
+    }
+
+    return db_create_dir_if_needed(tables_path);
 }
 
 DBStatus db_open(DB *db, const char *path) {
@@ -26,39 +74,52 @@ DBStatus db_open(DB *db, const char *path) {
         return DB_ERROR;
     }
 
-    size_t path_len = strlen(path);
+    /*
+     * Start from a clean state.
+     */
+    memset(db, 0, sizeof(DB));
 
-    if (path_len == 0 || path_len >= MAX_DB_PATH) {
+    if (strlen(path) == 0 || strlen(path) >= MAX_DB_PATH) {
         return DB_ERROR;
     }
 
     /*
-     * If the path already exists, make sure it is a directory.
+     * Store the database folder path.
      */
-    if (path_exists(path)) {
-        if (!path_is_directory(path)) {
-            fprintf(stderr, "Error: '%s' exists but is not a directory.\n", path);
-            return DB_IO_ERROR;
-        }
-    } else {
-        /*
-         * Create the database directory.
-         *
-         * 0755 means:
-         * - owner can read/write/execute
-         * - group can read/execute
-         * - others can read/execute
-         */
-        if (mkdir(path, 0755) != 0) {
-            fprintf(stderr, "Error: could not create database directory '%s': %s\n",
-                    path,
-                    strerror(errno));
-            return DB_IO_ERROR;
-        }
+    strncpy(db->path, path, MAX_DB_PATH - 1);
+    db->path[MAX_DB_PATH - 1] = '\0';
+
+    /*
+     * Create the main database folder if needed.
+     */
+    DBStatus status = db_create_dir_if_needed(db->path);
+
+    if (status != DB_OK) {
+        memset(db, 0, sizeof(DB));
+        return status;
     }
 
-    strncpy(db->path, path, MAX_DB_PATH);
-    db->path[MAX_DB_PATH - 1] = '\0';
+    /*
+     * Create the table file directory if needed.
+     */
+    status = db_create_tables_dir(db);
+
+    if (status != DB_OK) {
+        memset(db, 0, sizeof(DB));
+        return status;
+    }
+
+    /*
+     * Load catalog metadata from disk.
+     */
+    status = catalog_load(db);
+
+    if (status != DB_OK) {
+        memset(db, 0, sizeof(DB));
+        return status;
+    }
+
+    db->is_open = true;
 
     return DB_OK;
 }
@@ -68,13 +129,20 @@ DBStatus db_close(DB *db) {
         return DB_ERROR;
     }
 
-    /*
-     * Nothing to free yet.
-     *
-     * Later, this function may flush dirty pages, close table files,
-     * write catalog metadata, close the WAL, and release buffer memory.
-     */
-    db->path[0] = '\0';
+    if (!db->is_open) {
+        return DB_OK;
+    }
 
-    return DB_OK;
+    /*
+     * Save table metadata before closing the database.
+     */
+    DBStatus status = catalog_save(db);
+
+    /*
+     * Reset the DB even if saving failed.
+     * The caller still receives the save error.
+     */
+    memset(db, 0, sizeof(DB));
+
+    return status;
 }

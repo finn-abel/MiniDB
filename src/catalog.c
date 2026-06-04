@@ -1,0 +1,413 @@
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "catalog.h"
+#include "common.h"
+#include "db.h"
+#include "schema.h"
+#include "value.h"
+
+static DBStatus catalog_build_path(
+    const DB *db,
+    char *out_path,
+    uint32_t out_size
+) {
+    if (db == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    /*
+     * The catalog always lives directly inside the database folder.
+     * Example: mydb/catalog.db
+     */
+    int written = snprintf(
+        out_path,
+        out_size,
+        "%s/catalog.db",
+        db->path
+    );
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
+static DBStatus catalog_build_table_file_path(
+    const DB *db,
+    const char *table_name,
+    char *out_path,
+    uint32_t out_size
+) {
+    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    /*
+     * Each table has one data file.
+     * Example: mydb/tables/users.tbl
+     */
+    int written = snprintf(
+        out_path,
+        out_size,
+        "%s/tables/%s.tbl",
+        db->path,
+        table_name
+    );
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
+static const char *catalog_type_to_string(ValueType type) {
+    /*
+     * Convert internal value types into catalog text.
+     */
+    if (type == VALUE_INT) {
+        return "INT";
+    }
+
+    if (type == VALUE_TEXT) {
+        return "TEXT";
+    }
+
+    return "UNKNOWN";
+}
+
+static DBStatus catalog_string_to_type(const char *text, ValueType *out_type) {
+    if (text == NULL || out_type == NULL) {
+        return DB_ERROR;
+    }
+
+    /*
+     * Convert catalog text back into internal value types.
+     */
+    if (strcmp(text, "INT") == 0) {
+        *out_type = VALUE_INT;
+        return DB_OK;
+    }
+
+    if (strcmp(text, "TEXT") == 0) {
+        *out_type = VALUE_TEXT;
+        return DB_OK;
+    }
+
+    return DB_TYPE_ERROR;
+}
+
+static void catalog_clear(Catalog *catalog) {
+    if (catalog == NULL) {
+        return;
+    }
+
+    /*
+     * Clear all loaded table metadata.
+     */
+    memset(catalog, 0, sizeof(Catalog));
+}
+
+DBStatus catalog_load(DB *db) {
+    if (db == NULL) {
+        return DB_ERROR;
+    }
+
+    catalog_clear(&db->catalog);
+
+    char catalog_path[MAX_DB_PATH];
+
+    DBStatus status = catalog_build_path(
+        db,
+        catalog_path,
+        sizeof(catalog_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * If the catalog file does not exist yet, start with an empty catalog.
+     */
+    FILE *file = fopen(catalog_path, "r");
+
+    if (file == NULL) {
+        return DB_OK;
+    }
+
+    char line[256];
+
+    while (fgets(line, sizeof(line), file) != NULL) {
+        char table_name[MAX_TABLE_NAME];
+
+        /*
+         * A table definition starts with:
+         * TABLE users
+         */
+        if (sscanf(line, "TABLE %63s", table_name) != 1) {
+            continue;
+        }
+
+        if (db->catalog.table_count >= MAX_CATALOG_TABLES) {
+            fclose(file);
+            return DB_FULL;
+        }
+
+        Schema schema;
+
+        status = schema_init(&schema, table_name);
+
+        if (status != DB_OK) {
+            fclose(file);
+            return status;
+        }
+
+        /*
+         * The next line should be:
+         * COLUMNS N
+         */
+        if (fgets(line, sizeof(line), file) == NULL) {
+            fclose(file);
+            return DB_PARSE_ERROR;
+        }
+
+        uint16_t column_count = 0;
+
+        if (sscanf(line, "COLUMNS %hu", &column_count) != 1) {
+            fclose(file);
+            return DB_PARSE_ERROR;
+        }
+
+        for (uint16_t i = 0; i < column_count; i++) {
+            char column_name[MAX_COLUMN_NAME];
+            char type_name[32];
+
+            if (fgets(line, sizeof(line), file) == NULL) {
+                fclose(file);
+                return DB_PARSE_ERROR;
+            }
+
+            /*
+             * Column lines look like:
+             * id INT
+             * name TEXT
+             */
+            if (sscanf(line, "%63s %31s", column_name, type_name) != 2) {
+                fclose(file);
+                return DB_PARSE_ERROR;
+            }
+
+            ValueType type;
+
+            status = catalog_string_to_type(type_name, &type);
+
+            if (status != DB_OK) {
+                fclose(file);
+                return status;
+            }
+
+            /*
+             * The text format does not store constraints yet.
+             * For now, not_null and primary_key reload as false.
+             */
+            status = schema_add_column(
+                &schema,
+                column_name,
+                type,
+                false,
+                false
+            );
+
+            if (status != DB_OK) {
+                fclose(file);
+                return status;
+            }
+        }
+
+        /*
+         * A table definition must end with:
+         * END
+         */
+        if (fgets(line, sizeof(line), file) == NULL) {
+            fclose(file);
+            return DB_PARSE_ERROR;
+        }
+
+        if (strncmp(line, "END", 3) != 0) {
+            fclose(file);
+            return DB_PARSE_ERROR;
+        }
+
+        db->catalog.tables[db->catalog.table_count] = schema;
+        db->catalog.table_count++;
+    }
+
+    fclose(file);
+    return DB_OK;
+}
+
+DBStatus catalog_save(const DB *db) {
+    if (db == NULL) {
+        return DB_ERROR;
+    }
+
+    char catalog_path[MAX_DB_PATH];
+
+    DBStatus status = catalog_build_path(
+        db,
+        catalog_path,
+        sizeof(catalog_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * Rewrite the full catalog each time.
+     * This is simple and fine for this stage.
+     */
+    FILE *file = fopen(catalog_path, "w");
+
+    if (file == NULL) {
+        return DB_IO_ERROR;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.table_count; i++) {
+        const Schema *schema = &db->catalog.tables[i];
+
+        fprintf(file, "TABLE %s\n", schema->table_name);
+        fprintf(file, "COLUMNS %u\n", schema->column_count);
+
+        for (uint16_t j = 0; j < schema->column_count; j++) {
+            const Column *column = &schema->columns[j];
+
+            fprintf(
+                file,
+                "%s %s\n",
+                column->name,
+                catalog_type_to_string(column->type)
+            );
+        }
+
+        fprintf(file, "END\n");
+    }
+
+    if (fclose(file) != 0) {
+        return DB_IO_ERROR;
+    }
+
+    return DB_OK;
+}
+
+DBStatus catalog_create_table(DB *db, const Schema *schema) {
+    if (db == NULL || schema == NULL) {
+        return DB_ERROR;
+    }
+
+    if (catalog_table_exists(db, schema->table_name)) {
+        return DB_ERROR;
+    }
+
+    if (db->catalog.table_count >= MAX_CATALOG_TABLES) {
+        return DB_FULL;
+    }
+
+    /*
+     * Add the schema to the in-memory catalog first.
+     */
+    db->catalog.tables[db->catalog.table_count] = *schema;
+    db->catalog.table_count++;
+
+    char table_file_path[MAX_DB_PATH];
+
+    DBStatus status = catalog_build_table_file_path(
+        db,
+        schema->table_name,
+        table_file_path,
+        sizeof(table_file_path)
+    );
+
+    if (status != DB_OK) {
+        db->catalog.table_count--;
+        return status;
+    }
+
+    /*
+     * Create the table data file if it does not exist.
+     * The file can start empty; pages are allocated later.
+     */
+    FILE *table_file = fopen(table_file_path, "ab");
+
+    if (table_file == NULL) {
+        db->catalog.table_count--;
+        return DB_IO_ERROR;
+    }
+
+    if (fclose(table_file) != 0) {
+        db->catalog.table_count--;
+        return DB_IO_ERROR;
+    }
+
+    /*
+     * Persist the updated catalog immediately.
+     */
+    status = catalog_save(db);
+
+    if (status != DB_OK) {
+        db->catalog.table_count--;
+        return status;
+    }
+
+    return DB_OK;
+}
+
+DBStatus catalog_get_schema(
+    const DB *db,
+    const char *table_name,
+    Schema *out_schema
+) {
+    if (db == NULL || table_name == NULL || out_schema == NULL) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.table_count; i++) {
+        const Schema *schema = &db->catalog.tables[i];
+
+        if (strcmp(schema->table_name, table_name) == 0) {
+            *out_schema = *schema;
+            return DB_OK;
+        }
+    }
+
+    return DB_NOT_FOUND;
+}
+
+bool catalog_table_exists(const DB *db, const char *table_name) {
+    if (db == NULL || table_name == NULL) {
+        return false;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.table_count; i++) {
+        if (strcmp(db->catalog.tables[i].table_name, table_name) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void catalog_list_tables(const DB *db, FILE *out) {
+    if (db == NULL || out == NULL) {
+        return;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.table_count; i++) {
+        fprintf(out, "%s\n", db->catalog.tables[i].table_name);
+    }
+}

@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "catalog.h"
 #include "common.h"
 #include "db.h"
 #include "record.h"
@@ -27,7 +28,12 @@ static void cleanup_db_dir(const char *path) {
     snprintf(table_path, sizeof(table_path), "%s/tables/users.tbl", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
 
+    char catalog_path[MAX_DB_PATH];
+
+    snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
+
     remove(table_path);
+    remove(catalog_path);
     rmdir(tables_dir);
     rmdir(path);
 }
@@ -38,12 +44,14 @@ static void setup_db(DB *db, const char *path) {
     assert(db_open(db, path) == DB_OK);
 }
 
-static void setup_schema(Schema *schema) {
+static void setup_schema(DB *db, Schema *schema) {
     assert(schema_init(schema, "users") == DB_OK);
 
     assert(schema_add_column(schema, "id", VALUE_INT, true, true) == DB_OK);
     assert(schema_add_column(schema, "name", VALUE_TEXT, true, false) == DB_OK);
     assert(schema_add_column(schema, "age", VALUE_INT, false, false) == DB_OK);
+
+    assert(catalog_create_table(db, schema) == DB_OK);
 }
 
 static Row make_test_row(int32_t id, const char *name, int32_t age) {
@@ -100,9 +108,9 @@ static void test_table_open(void) {
     Table table;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table.is_open == true);
     assert(strcmp(table.schema.table_name, "users") == 0);
@@ -123,10 +131,10 @@ static void test_table_open_rejects_null_inputs(void) {
     Table table;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
-    assert(table_open(NULL, &db, &schema) == DB_ERROR);
-    assert(table_open(&table, NULL, &schema) == DB_ERROR);
+    assert(table_open(NULL, &db, "users") == DB_ERROR);
+    assert(table_open(&table, NULL, "users") == DB_ERROR);
     assert(table_open(&table, &db, NULL) == DB_ERROR);
 
     assert(db_close(&db) == DB_OK);
@@ -136,6 +144,22 @@ static void test_table_open_rejects_null_inputs(void) {
 
 static void test_table_close_null(void) {
     assert(table_close(NULL) == DB_ERROR);
+}
+
+static void test_table_open_missing_table(void) {
+    const char *path = "test_table_open_missing_db";
+
+    DB db;
+    Table table;
+
+    setup_db(&db, path);
+
+    assert(table_open(&table, &db, "missing") == DB_NOT_FOUND);
+    assert(table.is_open == false);
+
+    assert(db_close(&db) == DB_OK);
+
+    cleanup_db_dir(path);
 }
 
 static void test_table_close_unopened_table(void) {
@@ -154,9 +178,9 @@ static void test_table_close_resets_table(void) {
     Table table;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
     assert(table_close(&table) == DB_OK);
 
     assert(table.is_open == false);
@@ -178,11 +202,11 @@ static void test_table_insert_single_row(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     row = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
     assert(table_insert(&table, &row, &rid) == DB_OK);
 
     assert(rid.page_id == 0);
@@ -209,12 +233,12 @@ static void test_table_insert_multiple_rows(void) {
     RID second_rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     first = make_test_row(1, "Finn", 20);
     second = make_test_row(2, "Alex", 21);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &first, &first_rid) == DB_OK);
     assert(table_insert(&table, &second, &second_rid) == DB_OK);
@@ -244,11 +268,11 @@ static void test_table_insert_rejects_null_inputs(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     row = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(NULL, &row, &rid) == DB_ERROR);
     assert(table_insert(&table, NULL, &rid) == DB_ERROR);
@@ -286,12 +310,12 @@ static void test_table_insert_rejects_wrong_value_count(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     assert(row_create(&row, 1) == DB_OK);
     row.values[0] = value_int(1);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &row, &rid) == DB_ERROR);
 
@@ -313,7 +337,7 @@ static void test_table_insert_rejects_wrong_type(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     assert(row_create(&row, 3) == DB_OK);
 
@@ -321,7 +345,7 @@ static void test_table_insert_rejects_wrong_type(void) {
     assert(value_text(&row.values[1], "Finn") == DB_OK);
     row.values[2] = value_int(20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &row, &rid) == DB_TYPE_ERROR);
 
@@ -344,11 +368,11 @@ static void test_table_get_existing_row(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     original = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
     assert(table_insert(&table, &original, &rid) == DB_OK);
 
     assert(table_get(&table, rid, &copy) == DB_OK);
@@ -378,12 +402,12 @@ static void test_table_get_second_row(void) {
     RID second_rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     first = make_test_row(1, "Finn", 20);
     second = make_test_row(2, "Alex", 21);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &first, &first_rid) == DB_OK);
     assert(table_insert(&table, &second, &second_rid) == DB_OK);
@@ -411,9 +435,9 @@ static void test_table_get_rejects_null_inputs(void) {
     RID rid = {0, 0};
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_get(NULL, rid, &out_row) == DB_ERROR);
     assert(table_get(&table, rid, NULL) == DB_ERROR);
@@ -444,9 +468,9 @@ static void test_table_get_missing_page(void) {
     RID rid = {0, 0};
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_get(&table, rid, &out_row) == DB_NOT_FOUND);
 
@@ -469,11 +493,11 @@ static void test_table_get_missing_slot(void) {
     RID missing_rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     row = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
     assert(table_insert(&table, &row, &rid) == DB_OK);
 
     missing_rid.page_id = rid.page_id;
@@ -500,11 +524,11 @@ static void test_table_delete_existing_row(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     row = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &row, &rid) == DB_OK);
     assert(table_delete(&table, rid) == DB_OK);
@@ -536,9 +560,9 @@ static void test_table_delete_missing_page(void) {
     RID rid = {0, 0};
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_delete(&table, rid) == DB_NOT_FOUND);
 
@@ -560,11 +584,11 @@ static void test_table_delete_missing_slot(void) {
     RID missing_rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     row = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
     assert(table_insert(&table, &row, &rid) == DB_OK);
 
     missing_rid.page_id = rid.page_id;
@@ -590,11 +614,11 @@ static void test_table_delete_already_deleted_row(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     row = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &row, &rid) == DB_OK);
     assert(table_delete(&table, rid) == DB_OK);
@@ -622,12 +646,12 @@ static void test_table_insert_reuses_deleted_slot(void) {
     RID second_rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     first = make_test_row(1, "Finn", 20);
     second = make_test_row(2, "Alex", 21);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &first, &first_rid) == DB_OK);
     assert(table_delete(&table, first_rid) == DB_OK);
@@ -658,15 +682,15 @@ static void test_table_persists_after_reopen(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     original = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&first_table, &db, &schema) == DB_OK);
+    assert(table_open(&first_table, &db, "users") == DB_OK);
     assert(table_insert(&first_table, &original, &rid) == DB_OK);
     assert(table_close(&first_table) == DB_OK);
 
-    assert(table_open(&second_table, &db, &schema) == DB_OK);
+    assert(table_open(&second_table, &db, "users") == DB_OK);
 
     assert(table_get(&second_table, rid, &copy) == DB_OK);
     assert_test_row_matches(&copy, 1, "Finn", 20);
@@ -689,13 +713,13 @@ static void test_table_scan_empty_table(void) {
     ScanContext context;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     context.count = 0;
     context.last_rid.page_id = 0;
     context.last_rid.slot_id = 0;
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_scan(&table, count_scan_callback, &context) == DB_OK);
     assert(context.count == 0);
@@ -723,7 +747,7 @@ static void test_table_scan_counts_active_rows(void) {
     RID third_rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     first = make_test_row(1, "Finn", 20);
     second = make_test_row(2, "Alex", 21);
@@ -733,7 +757,7 @@ static void test_table_scan_counts_active_rows(void) {
     context.last_rid.page_id = 0;
     context.last_rid.slot_id = 0;
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &first, &first_rid) == DB_OK);
     assert(table_insert(&table, &second, &second_rid) == DB_OK);
@@ -768,7 +792,7 @@ static void test_table_scan_skips_deleted_rows(void) {
     RID second_rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     first = make_test_row(1, "Finn", 20);
     second = make_test_row(2, "Alex", 21);
@@ -777,7 +801,7 @@ static void test_table_scan_skips_deleted_rows(void) {
     context.last_rid.page_id = 0;
     context.last_rid.slot_id = 0;
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_insert(&table, &first, &first_rid) == DB_OK);
     assert(table_insert(&table, &second, &second_rid) == DB_OK);
@@ -808,9 +832,9 @@ static void test_table_scan_rejects_null_inputs(void) {
     ScanContext context;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
 
     assert(table_scan(NULL, count_scan_callback, &context) == DB_ERROR);
     assert(table_scan(&table, NULL, &context) == DB_ERROR);
@@ -840,11 +864,11 @@ static void test_table_scan_returns_callback_error(void) {
     RID rid;
 
     setup_db(&db, path);
-    setup_schema(&schema);
+    setup_schema(&db, &schema);
 
     row = make_test_row(1, "Finn", 20);
 
-    assert(table_open(&table, &db, &schema) == DB_OK);
+    assert(table_open(&table, &db, "users") == DB_OK);
     assert(table_insert(&table, &row, &rid) == DB_OK);
 
     assert(table_scan(&table, failing_scan_callback, NULL) == DB_ERROR);
@@ -860,6 +884,7 @@ static void test_table_scan_returns_callback_error(void) {
 int main(void) {
     test_table_open();
     test_table_open_rejects_null_inputs();
+    test_table_open_missing_table();
     test_table_close_null();
     test_table_close_unopened_table();
     test_table_close_resets_table();

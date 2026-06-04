@@ -1,10 +1,10 @@
-#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
+#include "catalog.h"
 #include "common.h"
 #include "db.h"
 #include "page.h"
@@ -14,42 +14,6 @@
 #include "row.h"
 #include "schema.h"
 #include "table.h"
-
-static DBStatus table_create_tables_dir(const DB *db) {
-    if (db == NULL) {
-        return DB_ERROR;
-    }
-
-    char tables_dir[MAX_DB_PATH];
-
-    /*
-     * Table files live inside:
-     * mydb/tables/
-     */
-    int written = snprintf(
-        tables_dir,
-        sizeof(tables_dir),
-        "%s/tables",
-        db->path
-    );
-
-    if (written < 0 || written >= (int)sizeof(tables_dir)) {
-        return DB_ERROR;
-    }
-
-    /*
-     * Create the tables directory if it does not already exist.
-     */
-    if (mkdir(tables_dir, 0755) != 0) {
-        if (errno == EEXIST) {
-            return DB_OK;
-        }
-
-        return DB_IO_ERROR;
-    }
-
-    return DB_OK;
-}
 
 static DBStatus table_build_file_path(
     const DB *db,
@@ -89,8 +53,8 @@ static DBStatus table_check_open(const Table *table) {
     return DB_OK;
 }
 
-DBStatus table_open(Table *table, const DB *db, const Schema *schema) {
-    if (table == NULL || db == NULL || schema == NULL) {
+DBStatus table_open(Table *table, const DB *db, const char *table_name) {
+    if (table == NULL || db == NULL || table_name == NULL) {
         return DB_ERROR;
     }
 
@@ -99,32 +63,33 @@ DBStatus table_open(Table *table, const DB *db, const Schema *schema) {
      */
     memset(table, 0, sizeof(Table));
 
-    DBStatus status = table_create_tables_dir(db);
-
-    if (status != DB_OK) {
-        return status;
-    }
-
     /*
-     * Copy the schema into the table.
-     * The table keeps its own schema metadata.
+     * Load the table schema from the catalog.
      */
-    table->schema = *schema;
-
-    status = table_build_file_path(
+    DBStatus status = catalog_get_schema(
         db,
-        schema->table_name,
-        table->file_path,
-        sizeof(table->file_path)
+        table_name,
+        &table->schema
     );
 
     if (status != DB_OK) {
         return status;
     }
 
+    status = table_build_file_path(
+        db,
+        table_name,
+        table->file_path,
+        sizeof(table->file_path)
+    );
+
+    if (status != DB_OK) {
+        memset(table, 0, sizeof(Table));
+        return status;
+    }
+
     /*
      * Open the table's data file.
-     * The pager creates the file if it does not exist.
      */
     status = pager_open(&table->pager, table->file_path);
 

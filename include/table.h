@@ -24,11 +24,11 @@ typedef struct {
 } Table;
 
 /*
- * Opens a table using the provided schema.
- * The table file path is built from the database path and table name.
- * For now, the schema must be passed in because there is no catalog yet.
+ * Opens a table by name.
+ * The schema is loaded from the database catalog.
+ * The table file is opened through the table's pager.
  */
-DBStatus table_open(Table *table, const DB *db, const Schema *schema);
+DBStatus table_open(Table *table, const DB *db, const char *table_name);
 
 /*
  * Closes the table's pager.
