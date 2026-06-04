@@ -32,11 +32,13 @@ $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^
 
 test: $(TEST_TARGETS)
-	@for test in $(TEST_TARGETS); do \
+	@set -e; \
+	for test in $(TEST_TARGETS); do \
 		echo "Running $$test..."; \
 		./$$test; \
 		echo ""; \
-	done
+	done; \
+	$(MAKE) clean
 
 clean:
 	rm -f $(OBJ) $(TEST_SUPPORT_OBJ) $(TEST_OBJ) $(TARGET) $(TEST_TARGETS)
