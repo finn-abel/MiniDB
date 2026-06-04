@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "catalog.h"
 #include "common.h"
 #include "db.h"
 #include "execution/executor.h"
@@ -9,6 +10,7 @@
 #include "sql/ast.h"
 #include "sql/binder.h"
 #include "sql/parser.h"
+#include "util/error.h"
 
 static void print_prompt(void) {
     /*
@@ -26,24 +28,199 @@ static void trim_newline(char *input) {
     }
 }
 
-/*
- * Prints a short shell-facing error.
- * Internal layers return status codes; the CLI turns them into readable text.
- */
-static void print_status_error(DBStatus status) {
-    if (status == DB_PARSE_ERROR) {
-        printf("Syntax error.\n");
-    } else if (status == DB_NOT_FOUND) {
-        printf("Not found.\n");
-    } else if (status == DB_FULL) {
-        printf("Database object is full.\n");
-    } else if (status == DB_TYPE_ERROR) {
-        printf("Type error.\n");
-    } else if (status == DB_IO_ERROR) {
-        printf("I/O error.\n");
-    } else {
-        printf("Error.\n");
+static const char *cli_value_type_name(ValueType type) {
+    /*
+     * Keep shell error wording aligned with CREATE TABLE syntax.
+     */
+    if (type == VALUE_INT) {
+        return "INT";
     }
+
+    if (type == VALUE_TEXT) {
+        return "TEXT";
+    }
+
+    return "UNKNOWN";
+}
+
+static const char *statement_table_name(const Statement *statement) {
+    if (statement == NULL) {
+        return NULL;
+    }
+
+    /*
+     * Most SQL errors can be explained better if the shell can name the table
+     * involved. Meta commands do not have one.
+     */
+    switch (statement->type) {
+        case STATEMENT_CREATE_TABLE:
+            return statement->create_table.table_name;
+        case STATEMENT_INSERT:
+            return statement->insert.table_name;
+        case STATEMENT_SELECT:
+            return statement->select.table_name;
+        case STATEMENT_DELETE:
+            return statement->delete_statement.table_name;
+        case STATEMENT_META_COMMAND:
+        default:
+            return NULL;
+    }
+}
+
+static bool set_insert_type_error(
+    const DB *db,
+    const InsertStatement *statement,
+    DBError *error
+) {
+    Schema schema;
+
+    /*
+     * INSERT type errors are positional: the first value maps to the first
+     * schema column, the second value maps to the second column, and so on.
+     */
+    if (catalog_get_schema(db, statement->table_name, &schema) != DB_OK) {
+        return false;
+    }
+
+    for (
+        uint16_t i = 0;
+        i < statement->value_count && i < schema.column_count;
+        i++
+    ) {
+        if (statement->values[i].type != schema.columns[i].type) {
+            db_error_set(
+                error,
+                DB_TYPE_ERROR,
+                "column '%s' expects %s, got %s.",
+                schema.columns[i].name,
+                cli_value_type_name(schema.columns[i].type),
+                cli_value_type_name(statement->values[i].type)
+            );
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool set_where_type_error(
+    const DB *db,
+    const char *table_name,
+    const WhereCondition *condition,
+    DBError *error
+) {
+    Schema schema;
+    ValueType column_type;
+
+    /*
+     * WHERE type errors are name-based, so look up the condition column before
+     * formatting the expected/actual type message.
+     */
+    if (catalog_get_schema(db, table_name, &schema) != DB_OK) {
+        return false;
+    }
+
+    if (schema_get_column_type(&schema, condition->column_name, &column_type) != DB_OK) {
+        return false;
+    }
+
+    db_error_set(
+        error,
+        DB_TYPE_ERROR,
+        "column '%s' expects %s, got %s.",
+        condition->column_name,
+        cli_value_type_name(column_type),
+        cli_value_type_name(condition->value.type)
+    );
+
+    return true;
+}
+
+/*
+ * Adds context to status-only failures when the CLI has enough parsed data.
+ * Engine layers still return DBStatus; the shell turns that into readable text.
+ */
+static void set_statement_error(
+    const DB *db,
+    const Statement *statement,
+    DBStatus status,
+    DBError *error
+) {
+    const char *table_name = statement_table_name(statement);
+
+    /*
+     * The binder reports duplicate CREATE TABLE as a generic DB_ERROR because
+     * the lower layer should not print shell text. The CLI can inspect the
+     * parsed statement and catalog to make that failure specific.
+     */
+    if (
+        status == DB_ERROR &&
+        statement != NULL &&
+        statement->type == STATEMENT_CREATE_TABLE &&
+        catalog_table_exists(db, statement->create_table.table_name)
+    ) {
+        db_error_set(
+            error,
+            status,
+            "table '%s' already exists.",
+            statement->create_table.table_name
+        );
+        return;
+    }
+
+    /*
+     * DB_NOT_FOUND can mean a missing table or column. If the table itself is
+     * absent, prefer that clearer message; otherwise fall back to the generic
+     * status text for now.
+     */
+    if (
+        status == DB_NOT_FOUND &&
+        table_name != NULL &&
+        !catalog_table_exists(db, table_name)
+    ) {
+        db_error_set(error, status, "table '%s' does not exist.", table_name);
+        return;
+    }
+
+    /*
+     * Type errors are most useful when they name the column and show the SQL
+     * type expected by the schema.
+     */
+    if (
+        status == DB_TYPE_ERROR &&
+        statement != NULL &&
+        statement->type == STATEMENT_INSERT &&
+        set_insert_type_error(db, &statement->insert, error)
+    ) {
+        return;
+    }
+
+    if (
+        status == DB_TYPE_ERROR &&
+        statement != NULL &&
+        statement->type == STATEMENT_SELECT &&
+        statement->select.has_where &&
+        set_where_type_error(db, table_name, &statement->select.where, error)
+    ) {
+        return;
+    }
+
+    if (
+        status == DB_TYPE_ERROR &&
+        statement != NULL &&
+        statement->type == STATEMENT_DELETE &&
+        statement->delete_statement.has_where &&
+        set_where_type_error(
+            db,
+            table_name,
+            &statement->delete_statement.where,
+            error
+        )
+    ) {
+        return;
+    }
+
+    db_error_set_status(error, status);
 }
 
 /*
@@ -68,7 +245,12 @@ static void print_success_message(const Plan *plan) {
  * Runs one input line through the SQL pipeline:
  * parser -> binder -> planner -> executor.
  */
-static DBStatus execute_input(DB *db, const char *input, bool *should_exit) {
+static DBStatus execute_input(
+    DB *db,
+    const char *input,
+    bool *should_exit,
+    DBError *error
+) {
     Statement statement;
     BoundStatement bound;
     Plan plan;
@@ -81,6 +263,7 @@ static DBStatus execute_input(DB *db, const char *input, bool *should_exit) {
     memset(&statement, 0, sizeof(Statement));
     memset(&bound, 0, sizeof(BoundStatement));
     memset(&plan, 0, sizeof(Plan));
+    db_error_clear(error);
 
     /*
      * Parser: input text -> syntax tree.
@@ -88,6 +271,7 @@ static DBStatus execute_input(DB *db, const char *input, bool *should_exit) {
     status = parser_parse(input, &statement);
 
     if (status != DB_OK) {
+        db_error_set_status(error, status);
         return status;
     }
 
@@ -97,6 +281,7 @@ static DBStatus execute_input(DB *db, const char *input, bool *should_exit) {
     status = binder_bind(db, &statement, &bound);
 
     if (status != DB_OK) {
+        set_statement_error(db, &statement, status, error);
         ast_statement_free(&statement);
         return status;
     }
@@ -107,6 +292,7 @@ static DBStatus execute_input(DB *db, const char *input, bool *should_exit) {
     status = planner_create_plan(&bound, &plan);
 
     if (status != DB_OK) {
+        set_statement_error(db, &statement, status, error);
         binder_bound_statement_free(&bound);
         ast_statement_free(&statement);
         return status;
@@ -131,6 +317,8 @@ static DBStatus execute_input(DB *db, const char *input, bool *should_exit) {
         ) {
             *should_exit = true;
         }
+    } else {
+        set_statement_error(db, &statement, status, error);
     }
 
     /*
@@ -146,13 +334,17 @@ static DBStatus execute_input(DB *db, const char *input, bool *should_exit) {
 
 int main(void) {
     DB db;
+    DBError error;
     char input[MAX_INPUT_SIZE];
     bool should_exit = false;
+
+    db_error_clear(&error);
 
     DBStatus open_status = db_open(&db, "mydb");
 
     if (open_status != DB_OK) {
-        fprintf(stderr, "Failed to open database.\n");
+        db_error_set_status(&error, open_status);
+        db_error_print(stderr, &error);
         return 1;
     }
 
@@ -181,14 +373,14 @@ int main(void) {
             continue;
         }
 
-        DBStatus status = execute_input(&db, input, &should_exit);
+        DBStatus status = execute_input(&db, input, &should_exit, &error);
 
         /*
          * The lower layers report status only. The CLI owns user-facing error
          * messages so engine code can stay UI-agnostic.
          */
         if (status != DB_OK) {
-            print_status_error(status);
+            db_error_print(stdout, &error);
         }
     }
 
