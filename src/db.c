@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "buffer/buffer_pool.h"
 #include "catalog.h"
 #include "common.h"
 #include "db.h"
@@ -134,9 +135,20 @@ DBStatus db_close(DB *db) {
     }
 
     /*
+     * Table pages may be dirty in the buffer pool. Flush them before saving
+     * catalog metadata and resetting DB state.
+     */
+    DBStatus status = buffer_pool_flush_all();
+
+    if (status != DB_OK) {
+        memset(db, 0, sizeof(DB));
+        return status;
+    }
+
+    /*
      * Save table metadata before closing the database.
      */
-    DBStatus status = catalog_save(db);
+    status = catalog_save(db);
 
     /*
      * Reset the DB even if saving failed.

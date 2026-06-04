@@ -1,9 +1,10 @@
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include "buffer/buffer_pool.h"
 #include "common.h"
 #include "page.h"
-#include "pager.h"
 #include "record.h"
 #include "rid.h"
 #include "row.h"
@@ -13,14 +14,6 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
         return DB_ERROR;
     }
 
-    Pager pager;
-
-    DBStatus status = pager_open(&pager, table_file);
-
-    if (status != DB_OK) {
-        return status;
-    }
-
     uint8_t *row_bytes = NULL;
     uint32_t row_len = 0;
 
@@ -28,24 +21,31 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
      * Convert the row into raw bytes.
      * Pages only store bytes, not Row structs.
      */
-    status = row_serialize(row, &row_bytes, &row_len);
+    DBStatus status = row_serialize(row, &row_bytes, &row_len);
 
     if (status != DB_OK) {
-        pager_close(&pager);
         return status;
     }
 
-    uint8_t page_buffer[PAGE_SIZE];
+    uint32_t page_count = 0;
+
+    status = buffer_pool_page_count(table_file, &page_count);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
 
     /*
      * First try to insert into an existing page with enough free space.
      */
-    for (uint32_t page_id = 0; page_id < pager_num_pages(&pager); page_id++) {
-        status = pager_read_page(&pager, page_id, page_buffer);
+    for (uint32_t page_id = 0; page_id < page_count; page_id++) {
+        uint8_t *page_buffer = NULL;
+
+        status = buffer_pool_fetch_page(table_file, page_id, &page_buffer);
 
         if (status != DB_OK) {
             free(row_bytes);
-            pager_close(&pager);
             return status;
         }
 
@@ -56,11 +56,17 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
         status = page_insert(page_buffer, row_bytes, row_len, &slot_id);
 
         if (status == DB_OK) {
-            status = pager_write_page(&pager, page_id, page_buffer);
+            status = buffer_pool_unpin_page(table_file, page_id, true);
 
             if (status != DB_OK) {
                 free(row_bytes);
-                pager_close(&pager);
+                return status;
+            }
+
+            status = buffer_pool_flush_page(table_file, page_id);
+
+            if (status != DB_OK) {
+                free(row_bytes);
                 return status;
             }
 
@@ -68,7 +74,7 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
             out_rid->slot_id = slot_id;
 
             free(row_bytes);
-            return pager_close(&pager);
+            return DB_OK;
         }
 
         /*
@@ -76,8 +82,15 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
          * Keep searching the next page.
          */
         if (status != DB_FULL) {
+            buffer_pool_unpin_page(table_file, page_id, false);
             free(row_bytes);
-            pager_close(&pager);
+            return status;
+        }
+
+        status = buffer_pool_unpin_page(table_file, page_id, false);
+
+        if (status != DB_OK) {
+            free(row_bytes);
             return status;
         }
     }
@@ -86,42 +99,55 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
      * No existing page had enough space.
      * Create a new page at the end of the file.
      */
-    uint32_t new_page_id = pager_num_pages(&pager);
+    uint32_t new_page_id = page_count;
+    uint8_t new_page_buffer[PAGE_SIZE];
 
-    status = page_init(page_buffer, new_page_id);
+    status = page_init(new_page_buffer, new_page_id);
 
     if (status != DB_OK) {
         free(row_bytes);
-        pager_close(&pager);
         return status;
     }
 
     uint16_t slot_id = 0;
-
-    status = page_insert(page_buffer, row_bytes, row_len, &slot_id);
-
-    if (status != DB_OK) {
-        free(row_bytes);
-        pager_close(&pager);
-        return status;
-    }
-
-    uint32_t allocated_page_id = 0;
-
-    status = pager_allocate_page(&pager, page_buffer, &allocated_page_id);
+    status = page_insert(new_page_buffer, row_bytes, row_len, &slot_id);
 
     if (status != DB_OK) {
         free(row_bytes);
-        pager_close(&pager);
         return status;
     }
 
-    out_rid->page_id = allocated_page_id;
+    uint8_t *page_buffer = NULL;
+
+    status = buffer_pool_new_page(table_file, &new_page_id, &page_buffer);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
+
+    memcpy(page_buffer, new_page_buffer, PAGE_SIZE);
+
+    status = buffer_pool_unpin_page(table_file, new_page_id, true);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
+
+    status = buffer_pool_flush_page(table_file, new_page_id);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
+
+    out_rid->page_id = new_page_id;
     out_rid->slot_id = slot_id;
 
     free(row_bytes);
 
-    return pager_close(&pager);
+    return DB_OK;
 }
 
 DBStatus record_get(const char *table_file, RID rid, Row *out_row) {
@@ -129,23 +155,14 @@ DBStatus record_get(const char *table_file, RID rid, Row *out_row) {
         return DB_ERROR;
     }
 
-    Pager pager;
-
-    DBStatus status = pager_open(&pager, table_file);
-
-    if (status != DB_OK) {
-        return status;
-    }
-
-    uint8_t page_buffer[PAGE_SIZE];
+    uint8_t *page_buffer = NULL;
 
     /*
-     * Load the page where the row should live.
+     * Fetch the page where the row should live.
      */
-    status = pager_read_page(&pager, rid.page_id, page_buffer);
+    DBStatus status = buffer_pool_fetch_page(table_file, rid.page_id, &page_buffer);
 
     if (status != DB_OK) {
-        pager_close(&pager);
         return status;
     }
 
@@ -159,7 +176,7 @@ DBStatus record_get(const char *table_file, RID rid, Row *out_row) {
     status = page_get(page_buffer, rid.slot_id, &row_bytes, &row_len);
 
     if (status != DB_OK) {
-        pager_close(&pager);
+        buffer_pool_unpin_page(table_file, rid.page_id, false);
         return status;
     }
 
@@ -169,12 +186,13 @@ DBStatus record_get(const char *table_file, RID rid, Row *out_row) {
      */
     status = row_deserialize(row_bytes, row_len, out_row);
 
+    DBStatus unpin_status = buffer_pool_unpin_page(table_file, rid.page_id, false);
+
     if (status != DB_OK) {
-        pager_close(&pager);
         return status;
     }
 
-    return pager_close(&pager);
+    return unpin_status;
 }
 
 DBStatus record_delete(const char *table_file, RID rid) {
@@ -182,23 +200,14 @@ DBStatus record_delete(const char *table_file, RID rid) {
         return DB_ERROR;
     }
 
-    Pager pager;
-
-    DBStatus status = pager_open(&pager, table_file);
-
-    if (status != DB_OK) {
-        return status;
-    }
-
-    uint8_t page_buffer[PAGE_SIZE];
+    uint8_t *page_buffer = NULL;
 
     /*
-     * Read the page containing the row.
+     * Fetch the page containing the row.
      */
-    status = pager_read_page(&pager, rid.page_id, page_buffer);
+    DBStatus status = buffer_pool_fetch_page(table_file, rid.page_id, &page_buffer);
 
     if (status != DB_OK) {
-        pager_close(&pager);
         return status;
     }
 
@@ -208,21 +217,20 @@ DBStatus record_delete(const char *table_file, RID rid) {
     status = page_delete(page_buffer, rid.slot_id);
 
     if (status != DB_OK) {
-        pager_close(&pager);
+        buffer_pool_unpin_page(table_file, rid.page_id, false);
         return status;
     }
 
     /*
-     * Write the modified page back to disk.
+     * Mark the cached page dirty and flush it to keep record_delete durable.
      */
-    status = pager_write_page(&pager, rid.page_id, page_buffer);
+    status = buffer_pool_unpin_page(table_file, rid.page_id, true);
 
     if (status != DB_OK) {
-        pager_close(&pager);
         return status;
     }
 
-    return pager_close(&pager);
+    return buffer_pool_flush_page(table_file, rid.page_id);
 }
 
 DBStatus record_scan(
@@ -234,25 +242,22 @@ DBStatus record_scan(
         return DB_ERROR;
     }
 
-    Pager pager;
-
-    DBStatus status = pager_open(&pager, table_file);
+    uint32_t total_pages = 0;
+    DBStatus status = buffer_pool_page_count(table_file, &total_pages);
 
     if (status != DB_OK) {
         return status;
     }
 
-    uint8_t page_buffer[PAGE_SIZE];
-    uint32_t total_pages = pager_num_pages(&pager);
-
     /*
      * Visit every page in the table file.
      */
     for (uint32_t page_id = 0; page_id < total_pages; page_id++) {
-        status = pager_read_page(&pager, page_id, page_buffer);
+        uint8_t *page_buffer = NULL;
+
+        status = buffer_pool_fetch_page(table_file, page_id, &page_buffer);
 
         if (status != DB_OK) {
-            pager_close(&pager);
             return status;
         }
 
@@ -272,7 +277,7 @@ DBStatus record_scan(
             status = page_get(page_buffer, slot_id, &row_bytes, &row_len);
 
             if (status != DB_OK) {
-                pager_close(&pager);
+                buffer_pool_unpin_page(table_file, page_id, false);
                 return status;
             }
 
@@ -284,7 +289,7 @@ DBStatus record_scan(
             status = row_deserialize(row_bytes, row_len, &row);
 
             if (status != DB_OK) {
-                pager_close(&pager);
+                buffer_pool_unpin_page(table_file, page_id, false);
                 return status;
             }
 
@@ -302,11 +307,17 @@ DBStatus record_scan(
             row_free(&row);
 
             if (status != DB_OK) {
-                pager_close(&pager);
+                buffer_pool_unpin_page(table_file, page_id, false);
                 return status;
             }
         }
+
+        status = buffer_pool_unpin_page(table_file, page_id, false);
+
+        if (status != DB_OK) {
+            return status;
+        }
     }
 
-    return pager_close(&pager);
+    return DB_OK;
 }
