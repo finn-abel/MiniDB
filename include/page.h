@@ -7,10 +7,11 @@
 #include "common.h"
 
 /*
- * Page types let us distinguish different kinds of pages later.
- * For now, MiniDB only has normal data pages.
+ * Page types let us distinguish different kinds of pages.
  */
 #define PAGE_TYPE_DATA 1
+#define PAGE_TYPE_BTREE_INTERNAL 2
+#define PAGE_TYPE_BTREE_LEAF 3
 
 /*
  * Slot flags describe the state of a slot.
