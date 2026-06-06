@@ -118,21 +118,21 @@ static DBStatus planner_build_create_index_plan(
         return status;
     }
 
-    status = planner_copy_name(
-        out_plan->create_index.index.column_name,
-        sizeof(out_plan->create_index.index.column_name),
-        create_index->column_name
-    );
+    out_plan->create_index.index.column_count = create_index->column_count;
 
-    if (status != DB_OK) {
-        return status;
+    for (uint16_t i = 0; i < create_index->column_count; i++) {
+        status = planner_copy_name(
+            out_plan->create_index.index.column_names[i],
+            MAX_COLUMN_NAME,
+            create_index->column_names[i]
+        );
+
+        if (status != DB_OK) {
+            return status;
+        }
     }
 
-    /*
-     * Explicit indexes are unique while the B+ tree stores a single RID per
-     * key. This flag makes that behavior visible in catalog metadata.
-     */
-    out_plan->create_index.index.unique = true;
+    out_plan->create_index.index.unique = false;
 
     return DB_OK;
 }

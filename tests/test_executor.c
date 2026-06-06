@@ -18,6 +18,7 @@ static void cleanup_db_dir(const char *path) {
     char users_path[MAX_DB_PATH];
     char users_index_path[MAX_DB_PATH];
     char users_age_index_path[MAX_DB_PATH];
+    char users_age_name_index_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
     char indexes_dir[MAX_DB_PATH];
     char wal_path[MAX_DB_PATH];
@@ -25,7 +26,8 @@ static void cleanup_db_dir(const char *path) {
     snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
     snprintf(users_path, sizeof(users_path), "%s/tables/users.tbl", path);
     snprintf(users_index_path, sizeof(users_index_path), "%s/indexes/users_pk.btree", path);
-    snprintf(users_age_index_path, sizeof(users_age_index_path), "%s/indexes/users_age_idx.btree", path);
+    snprintf(users_age_index_path, sizeof(users_age_index_path), "%s/indexes/users_age_idx.sidx", path);
+    snprintf(users_age_name_index_path, sizeof(users_age_name_index_path), "%s/indexes/users_age_name_idx.sidx", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
     snprintf(indexes_dir, sizeof(indexes_dir), "%s/indexes", path);
     snprintf(wal_path, sizeof(wal_path), "%s/minidb.wal", path);
@@ -33,6 +35,7 @@ static void cleanup_db_dir(const char *path) {
     remove(users_path);
     remove(users_index_path);
     remove(users_age_index_path);
+    remove(users_age_name_index_path);
     remove(wal_path);
     remove(catalog_path);
     rmdir(tables_dir);
@@ -283,11 +286,13 @@ static void test_executor_secondary_index_workflow(void) {
     execute_sql(&db, "INSERT INTO users VALUES (1, \"Finn\", 20);", stdout);
     execute_sql(&db, "INSERT INTO users VALUES (2, \"Alex\", 17);", stdout);
     execute_sql(&db, "CREATE INDEX users_age_idx ON users (age);", stdout);
+    execute_sql(&db, "CREATE INDEX users_age_name_idx ON users (age, name);", stdout);
 
-    assert(db.catalog.index_count == 1);
+    assert(db.catalog.index_count == 2);
     assert(strcmp(db.catalog.indexes[0].index_name, "users_age_idx") == 0);
-    assert(strcmp(db.catalog.indexes[0].column_name, "age") == 0);
-    assert(db.catalog.indexes[0].unique == true);
+    assert(db.catalog.indexes[0].column_count == 1);
+    assert(strcmp(db.catalog.indexes[0].column_names[0], "age") == 0);
+    assert(db.catalog.indexes[0].unique == false);
 
     out = tmpfile();
     assert(out != NULL);
@@ -298,7 +303,25 @@ static void test_executor_secondary_index_workflow(void) {
     assert(fgetc(out) == EOF);
     assert(fclose(out) == 0);
 
-    assert(execute_sql_status(&db, "INSERT INTO users VALUES (3, \"Sam\", 17);", stdout) == DB_ERROR);
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT name FROM users WHERE age >= 20;", out);
+    rewind(out);
+    assert_next_line(out, "Finn\n");
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT id FROM users WHERE name = \"Finn\";", out);
+    rewind(out);
+    assert_next_line(out, "1\n");
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    execute_sql(&db, "INSERT INTO users VALUES (3, \"Sam\", 17);", stdout);
 
     execute_sql(&db, "UPDATE users SET age = 18 WHERE age = 17;", stdout);
 
@@ -319,6 +342,7 @@ static void test_executor_secondary_index_workflow(void) {
     execute_sql(&db, "SELECT name FROM users WHERE age = 18;", out);
     rewind(out);
     assert_next_line(out, "Alex\n");
+    assert_next_line(out, "Sam\n");
     assert(fgetc(out) == EOF);
     assert(fclose(out) == 0);
 

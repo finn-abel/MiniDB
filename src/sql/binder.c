@@ -61,12 +61,28 @@ static DBStatus binder_copy_statement(
 
             return DB_OK;
         case STATEMENT_CREATE_INDEX:
-            return ast_create_index_init(
+            status = ast_create_index_init(
                 &dest->create_index,
                 source->create_index.index_name,
-                source->create_index.table_name,
-                source->create_index.column_name
+                source->create_index.table_name
             );
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            for (uint16_t i = 0; i < source->create_index.column_count; i++) {
+                status = ast_create_index_add_column(
+                    &dest->create_index,
+                    source->create_index.column_names[i]
+                );
+
+                if (status != DB_OK) {
+                    return status;
+                }
+            }
+
+            return DB_OK;
         case STATEMENT_INSERT:
             /*
              * INSERT values may contain TEXT, so ast_insert_add_value performs
@@ -325,8 +341,6 @@ static DBStatus binder_bind_create_index(
     const Statement *statement,
     BoundStatement *out_bound
 ) {
-    ValueType column_type;
-
     if (
         catalog_index_exists(db, statement->create_index.index_name) ||
         binder_name_matches_implicit_primary_key_index(
@@ -337,20 +351,8 @@ static DBStatus binder_bind_create_index(
         return DB_ERROR;
     }
 
-    CatalogIndex existing_index;
-    DBStatus existing_index_status = catalog_find_index_for_column(
-        db,
-        statement->create_index.table_name,
-        statement->create_index.column_name,
-        &existing_index
-    );
-
-    if (existing_index_status == DB_OK) {
+    if (statement->create_index.column_count == 0) {
         return DB_ERROR;
-    }
-
-    if (existing_index_status != DB_NOT_FOUND) {
-        return existing_index_status;
     }
 
     DBStatus status = catalog_get_schema(
@@ -363,22 +365,29 @@ static DBStatus binder_bind_create_index(
         return status;
     }
 
-    status = schema_get_column_type(
-        &out_bound->table_schema,
-        statement->create_index.column_name,
-        &column_type
-    );
+    for (uint16_t i = 0; i < statement->create_index.column_count; i++) {
+        uint16_t column_index = 0;
 
-    if (status != DB_OK) {
-        return status;
-    }
+        status = schema_get_column_index(
+            &out_bound->table_schema,
+            statement->create_index.column_names[i],
+            &column_index
+        );
 
-    /*
-     * The current B+ tree key is int32_t, so CREATE INDEX is limited to INT
-     * columns until a typed/composite index key format exists.
-     */
-    if (column_type != VALUE_INT) {
-        return DB_TYPE_ERROR;
+        if (status != DB_OK) {
+            return status;
+        }
+
+        for (uint16_t j = 0; j < i; j++) {
+            if (
+                strcmp(
+                    statement->create_index.column_names[j],
+                    statement->create_index.column_names[i]
+                ) == 0
+            ) {
+                return DB_ERROR;
+            }
+        }
     }
 
     out_bound->has_table_schema = true;

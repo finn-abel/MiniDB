@@ -177,8 +177,7 @@ DBStatus ast_create_table_add_column_with_constraints(
 DBStatus ast_create_index_init(
     CreateIndexStatement *statement,
     const char *index_name,
-    const char *table_name,
-    const char *column_name
+    const char *table_name
 ) {
     DBStatus status;
 
@@ -208,11 +207,38 @@ DBStatus ast_create_index_init(
         return status;
     }
 
-    return ast_copy_name(
-        statement->column_name,
-        sizeof(statement->column_name),
+    return DB_OK;
+}
+
+DBStatus ast_create_index_add_column(
+    CreateIndexStatement *statement,
+    const char *column_name
+) {
+    if (statement == NULL || column_name == NULL) {
+        return DB_ERROR;
+    }
+
+    if (statement->column_count >= MAX_COLUMNS) {
+        return DB_FULL;
+    }
+
+    /*
+     * CREATE INDEX can name multiple columns. The AST preserves parser order
+     * because catalog storage and secondary index files use the same key order.
+     */
+    DBStatus status = ast_copy_name(
+        statement->column_names[statement->column_count],
+        MAX_COLUMN_NAME,
         column_name
     );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    statement->column_count++;
+
+    return DB_OK;
 }
 
 DBStatus ast_insert_init(InsertStatement *statement, const char *table_name) {

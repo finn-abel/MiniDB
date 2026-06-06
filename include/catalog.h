@@ -22,13 +22,14 @@ typedef struct DB DB;
  *
  * Primary-key indexes are still derived from Schema column flags. CREATE INDEX
  * entries live here because they need stable names and must survive db_open.
- * The current B+ tree stores one RID per key, so explicit indexes are unique
- * integer equality indexes until duplicate-key storage is added.
+ * Explicit indexes store one or more key columns. They are non-unique by
+ * default and can contain duplicate key values that point to different RIDs.
  */
 typedef struct {
     char index_name[MAX_INDEX_NAME];
     char table_name[MAX_TABLE_NAME];
-    char column_name[MAX_COLUMN_NAME];
+    uint16_t column_count;
+    char column_names[MAX_COLUMNS][MAX_COLUMN_NAME];
     bool unique;
 } CatalogIndex;
 

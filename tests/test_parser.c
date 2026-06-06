@@ -53,7 +53,18 @@ static void test_parser_create_index(void) {
     assert(statement.type == STATEMENT_CREATE_INDEX);
     assert(strcmp(statement.create_index.index_name, "users_age_idx") == 0);
     assert(strcmp(statement.create_index.table_name, "users") == 0);
-    assert(strcmp(statement.create_index.column_name, "age") == 0);
+    assert(statement.create_index.column_count == 1);
+    assert(strcmp(statement.create_index.column_names[0], "age") == 0);
+
+    ast_statement_free(&statement);
+
+    assert(parser_parse("CREATE INDEX users_age_name_idx ON users (age, name);", &statement) == DB_OK);
+
+    assert(statement.type == STATEMENT_CREATE_INDEX);
+    assert(strcmp(statement.create_index.index_name, "users_age_name_idx") == 0);
+    assert(statement.create_index.column_count == 2);
+    assert(strcmp(statement.create_index.column_names[0], "age") == 0);
+    assert(strcmp(statement.create_index.column_names[1], "name") == 0);
 
     ast_statement_free(&statement);
 }

@@ -39,13 +39,14 @@ typedef struct {
 /*
  * CREATE INDEX index_name ON table_name (column_name)
  *
- * MiniDB currently backs explicit indexes with the same B+ tree primitive as
- * primary keys, which means one integer key maps to one RID.
+ * Composite indexes have column_count > 1. The executor can use any indexed
+ * column in the stored key tuple for the current single-condition WHERE shape.
  */
 typedef struct {
     char index_name[MAX_INDEX_NAME];
     char table_name[MAX_TABLE_NAME];
-    char column_name[MAX_COLUMN_NAME];
+    uint16_t column_count;
+    char column_names[MAX_COLUMNS][MAX_COLUMN_NAME];
 } CreateIndexStatement;
 
 /*
@@ -156,7 +157,10 @@ DBStatus ast_create_table_add_column_with_constraints(
 DBStatus ast_create_index_init(
     CreateIndexStatement *statement,
     const char *index_name,
-    const char *table_name,
+    const char *table_name
+);
+DBStatus ast_create_index_add_column(
+    CreateIndexStatement *statement,
     const char *column_name
 );
 

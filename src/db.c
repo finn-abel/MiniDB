@@ -9,6 +9,7 @@
 #include "common.h"
 #include "db.h"
 #include "index/btree.h"
+#include "index/secondary.h"
 #include "record.h"
 #include "row.h"
 #include "schema.h"
@@ -162,7 +163,7 @@ static DBStatus db_secondary_index_path(
     int written = snprintf(
         out_path,
         out_size,
-        "%s/indexes/%s.btree",
+        "%s/indexes/%s.sidx",
         db->path,
         index_name
     );
@@ -265,10 +266,6 @@ static DBStatus db_rebuild_primary_key_index(const DB *db, const Schema *schema)
         return DB_OK;
     }
 
-    if (status != DB_OK) {
-        return status;
-    }
-
     char index_path[MAX_DB_PATH];
     status = db_primary_key_index_path(
         db,
@@ -284,12 +281,9 @@ static DBStatus db_rebuild_primary_key_index(const DB *db, const Schema *schema)
     return db_rebuild_int_index(db, schema, primary_key_index, index_path);
 }
 
-static DBStatus db_rebuild_secondary_index(
-    const DB *db,
-    const CatalogIndex *index
-) {
+static DBStatus db_rebuild_secondary_index(const DB *db, const CatalogIndex *index) {
     Schema schema;
-    uint16_t column_index = 0;
+    uint16_t column_indexes[MAX_COLUMNS];
 
     DBStatus status = catalog_get_schema(db, index->table_name, &schema);
 
@@ -297,7 +291,17 @@ static DBStatus db_rebuild_secondary_index(
         return status;
     }
 
-    status = schema_get_column_index(&schema, index->column_name, &column_index);
+    if (index->column_count == 0 || index->column_count > MAX_COLUMNS) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < index->column_count; i++) {
+        status = schema_get_column_index(&schema, index->column_names[i], &column_indexes[i]);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
 
     if (status != DB_OK) {
         return status;
@@ -315,7 +319,26 @@ static DBStatus db_rebuild_secondary_index(
         return status;
     }
 
-    return db_rebuild_int_index(db, &schema, column_index, index_path);
+    char table_file[MAX_DB_PATH];
+    status = db_table_file_path(db, schema.table_name, table_file, sizeof(table_file));
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = buffer_pool_discard_file(index_path);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return secondary_index_build(
+        index_path,
+        table_file,
+        &schema,
+        column_indexes,
+        index->column_count
+    );
 }
 
 static DBStatus db_rebuild_primary_key_indexes(const DB *db) {

@@ -109,7 +109,7 @@ static DBStatus catalog_build_secondary_index_path(
     int written = snprintf(
         out_path,
         out_size,
-        "%s/indexes/%s.btree",
+        "%s/indexes/%s.sidx",
         db->path,
         index_name
     );
@@ -303,11 +303,12 @@ DBStatus catalog_load(DB *db) {
         char table_name[MAX_TABLE_NAME];
         char index_name[MAX_INDEX_NAME];
         char index_table_name[MAX_TABLE_NAME];
-        char index_column_name[MAX_COLUMN_NAME];
+        char third_field[MAX_COLUMN_NAME];
 
         /*
-         * Secondary indexes are saved as standalone lines after table blocks:
-         * INDEX idx_users_age users age UNIQUE
+         * Secondary indexes are saved as standalone lines after table blocks.
+         * New format: INDEX idx_users_age users 1 age
+         * Old format: INDEX idx_users_age users age UNIQUE
          */
         if (
             sscanf(
@@ -315,7 +316,7 @@ DBStatus catalog_load(DB *db) {
                 "INDEX %63s %63s %63s",
                 index_name,
                 index_table_name,
-                index_column_name
+                third_field
             ) == 3
         ) {
             if (db->catalog.index_count >= MAX_CATALOG_INDEXES) {
@@ -329,9 +330,73 @@ DBStatus catalog_load(DB *db) {
             index->index_name[sizeof(index->index_name) - 1] = '\0';
             strncpy(index->table_name, index_table_name, sizeof(index->table_name) - 1);
             index->table_name[sizeof(index->table_name) - 1] = '\0';
-            strncpy(index->column_name, index_column_name, sizeof(index->column_name) - 1);
-            index->column_name[sizeof(index->column_name) - 1] = '\0';
-            index->unique = true;
+
+            uint16_t parsed_column_count = 0;
+
+            if (sscanf(third_field, "%hu", &parsed_column_count) == 1) {
+                char *cursor = line;
+
+                /*
+                 * New index lines store the column count before the column
+                 * names. Walk past: INDEX, index name, table name, count.
+                 */
+                for (uint16_t skip = 0; skip < 4; skip++) {
+                    cursor = strchr(cursor, ' ');
+
+                    if (cursor == NULL) {
+                        fclose(file);
+                        return DB_PARSE_ERROR;
+                    }
+
+                    while (*cursor == ' ') {
+                        cursor++;
+                    }
+                }
+
+                if (parsed_column_count == 0 || parsed_column_count > MAX_COLUMNS) {
+                    fclose(file);
+                    return DB_PARSE_ERROR;
+                }
+
+                index->column_count = parsed_column_count;
+
+                for (uint16_t i = 0; i < parsed_column_count; i++) {
+                    if (
+                        sscanf(cursor, "%63s", index->column_names[i]) != 1 ||
+                        strlen(index->column_names[i]) >= MAX_COLUMN_NAME
+                    ) {
+                        fclose(file);
+                        return DB_PARSE_ERROR;
+                    }
+
+                    cursor = strchr(cursor, ' ');
+
+                    if (cursor == NULL && i + 1 < parsed_column_count) {
+                        fclose(file);
+                        return DB_PARSE_ERROR;
+                    }
+
+                    if (cursor != NULL) {
+                        while (*cursor == ' ') {
+                            cursor++;
+                        }
+                    }
+                }
+            } else {
+                /*
+                 * Older catalogs saved only one column name. Loading them as a
+                 * one-column non-unique index keeps existing databases usable.
+                 */
+                index->column_count = 1;
+                strncpy(
+                    index->column_names[0],
+                    third_field,
+                    sizeof(index->column_names[0]) - 1
+                );
+                index->column_names[0][sizeof(index->column_names[0]) - 1] = '\0';
+            }
+
+            index->unique = false;
             db->catalog.index_count++;
 
             continue;
@@ -528,14 +593,17 @@ DBStatus catalog_save(const DB *db) {
     for (uint16_t i = 0; i < db->catalog.index_count; i++) {
         const CatalogIndex *index = &db->catalog.indexes[i];
 
-        fprintf(
-            file,
-            "INDEX %s %s %s%s\n",
-            index->index_name,
-            index->table_name,
-            index->column_name,
-            index->unique ? " UNIQUE" : ""
-        );
+        /*
+         * Persist explicit indexes with a column count so composite index
+         * definitions round-trip without needing escaping or nested blocks.
+         */
+        fprintf(file, "INDEX %s %s %u", index->index_name, index->table_name, index->column_count);
+
+        for (uint16_t j = 0; j < index->column_count; j++) {
+            fprintf(file, " %s", index->column_names[j]);
+        }
+
+        fprintf(file, "%s\n", index->unique ? " UNIQUE" : "");
     }
 
     if (fclose(file) != 0) {
@@ -729,11 +797,14 @@ DBStatus catalog_find_index_for_column(
         const CatalogIndex *index = &db->catalog.indexes[i];
 
         if (
-            strcmp(index->table_name, table_name) == 0 &&
-            strcmp(index->column_name, column_name) == 0
+            strcmp(index->table_name, table_name) == 0
         ) {
-            *out_index = *index;
-            return DB_OK;
+            for (uint16_t j = 0; j < index->column_count; j++) {
+                if (strcmp(index->column_names[j], column_name) == 0) {
+                    *out_index = *index;
+                    return DB_OK;
+                }
+            }
         }
     }
 

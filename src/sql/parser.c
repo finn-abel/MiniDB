@@ -421,7 +421,7 @@ static DBStatus parser_parse_create_table(Parser *parser, Statement *out_stateme
 
 /*
  * CREATE INDEX grammar after CREATE has already been consumed:
- *   INDEX identifier ON identifier (identifier);
+ *   INDEX identifier ON identifier (identifier [, identifier]*);
  */
 static DBStatus parser_parse_create_index(Parser *parser, Statement *out_statement) {
     char index_name[MAX_INDEX_NAME];
@@ -465,24 +465,41 @@ static DBStatus parser_parse_create_index(Parser *parser, Statement *out_stateme
         return status;
     }
 
-    status = parser_expect_identifier(parser, column_name, sizeof(column_name));
-
-    if (status != DB_OK) {
-        return status;
-    }
-
-    status = parser_expect(parser, TOKEN_RIGHT_PAREN);
-
-    if (status != DB_OK) {
-        return status;
-    }
-
     status = ast_create_index_init(
         &out_statement->create_index,
         index_name,
-        table_name,
-        column_name
+        table_name
     );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    while (true) {
+        status = parser_expect_identifier(parser, column_name, sizeof(column_name));
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        status = ast_create_index_add_column(&out_statement->create_index, column_name);
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        if (parser->current.type != TOKEN_COMMA) {
+            break;
+        }
+
+        status = parser_advance(parser);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    status = parser_expect(parser, TOKEN_RIGHT_PAREN);
 
     if (status != DB_OK) {
         return status;
