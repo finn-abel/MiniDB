@@ -34,8 +34,31 @@ DBStatus transaction_init(Transaction *transaction) {
      * its own transaction unless the user explicitly starts one.
      */
     transaction->autocommit = true;
+    transaction->wal = NULL;
 
     return DB_OK;
+}
+
+DBStatus transaction_attach_wal(Transaction *transaction, WAL *wal) {
+    if (transaction == NULL || wal == NULL) {
+        return DB_ERROR;
+    }
+
+    if (transaction->state == TRANSACTION_STATE_ACTIVE) {
+        return DB_ERROR;
+    }
+
+    transaction->wal = wal;
+
+    return DB_OK;
+}
+
+uint64_t transaction_active_id(const Transaction *transaction) {
+    if (transaction == NULL || transaction->state != TRANSACTION_STATE_ACTIVE) {
+        return 0;
+    }
+
+    return transaction->id;
 }
 
 DBStatus transaction_begin(Transaction *transaction) {
@@ -54,6 +77,16 @@ DBStatus transaction_begin(Transaction *transaction) {
     transaction->id = transaction_next_id();
     transaction->state = TRANSACTION_STATE_ACTIVE;
 
+    if (transaction->wal != NULL) {
+        DBStatus status = wal_log_begin(transaction->wal, transaction->id);
+
+        if (status != DB_OK) {
+            transaction->id = 0;
+            transaction->state = TRANSACTION_STATE_IDLE;
+            return status;
+        }
+    }
+
     return DB_OK;
 }
 
@@ -66,11 +99,25 @@ DBStatus transaction_commit(Transaction *transaction) {
         return DB_ERROR;
     }
 
+    DBStatus status = DB_OK;
+
+    if (transaction->wal != NULL) {
+        /*
+         * Commit reaches the WAL before dirty pages are flushed. Recovery can
+         * then replay this transaction if the process dies during page flush.
+         */
+        status = wal_log_commit(transaction->wal, transaction->id);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
     /*
-     * Autocommit needs a real persistence point even before WAL exists.
-     * Flushing all dirty pages is conservative but correct for this stage.
+     * Autocommit needs a real persistence point. Flushing all dirty pages is
+     * conservative but correct for this stage.
      */
-    DBStatus status = buffer_pool_flush_all();
+    status = buffer_pool_flush_all();
 
     if (status != DB_OK) {
         /*

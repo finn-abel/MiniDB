@@ -32,6 +32,7 @@ typedef struct {
 typedef struct {
     Table *table;
     const DeletePlan *plan;
+    Transaction *transaction;
 } DeleteContext;
 
 /*
@@ -41,7 +42,18 @@ typedef struct {
 typedef struct {
     Table *table;
     const UpdatePlan *plan;
+    Transaction *transaction;
 } UpdateContext;
+
+typedef struct {
+    /*
+     * transaction_execute_autocommit accepts a generic callback, so this wraps
+     * the normal executor arguments into one pointer-sized context.
+     */
+    DB *db;
+    const Plan *plan;
+    FILE *out;
+} ExecuteContext;
 
 /*
  * Execution rows and plans own their values independently.
@@ -240,10 +252,14 @@ static DBStatus executor_delete_callback(const Row *row, RID rid, void *context)
     }
 
     /*
-     * Use the record manager here because the plan has already identified the
-     * row location through the scan callback's RID.
+     * Use the logged record path here because the scan callback has both the
+     * matching RID and the active statement transaction.
      */
-    return record_delete(delete_context->table->file_path, rid);
+    return record_delete_logged(
+        delete_context->table->file_path,
+        rid,
+        delete_context->transaction
+    );
 }
 
 /*
@@ -288,7 +304,7 @@ static DBStatus executor_build_updated_row(
 
 /*
  * Callback used by table_scan for UPDATE.
- * Matching rows are rewritten through record_update.
+ * Matching rows are rewritten through the WAL-aware record update path.
  */
 static DBStatus executor_update_callback(const Row *row, RID rid, void *context) {
     UpdateContext *update_context = context;
@@ -344,11 +360,17 @@ static DBStatus executor_update_callback(const Row *row, RID rid, void *context)
     if (status == DB_OK) {
         RID updated_rid;
 
-        status = record_update(
+        /*
+         * UPDATE may be in-place or delete-plus-insert if the row grows. The
+         * logged record layer handles both shapes while preserving the SQL
+         * executor's simple "replace this row" request.
+         */
+        status = record_update_logged(
             update_context->table->file_path,
             rid,
             &updated_row,
-            &updated_rid
+            &updated_rid,
+            update_context->transaction
         );
     }
 
@@ -381,7 +403,16 @@ static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
     status = schema_validate_row(&table.schema, &plan->row);
 
     if (status == DB_OK) {
-        status = record_insert(table.file_path, (Row *)&plan->row, &rid);
+        /*
+         * The executor is inside transaction_execute_autocommit by the time it
+         * reaches this call, so db->transaction has a valid txn id for WAL.
+         */
+        status = record_insert_logged(
+            table.file_path,
+            (Row *)&plan->row,
+            &rid,
+            &db->transaction
+        );
     }
 
     DBStatus close_status = table_close(&table);
@@ -442,6 +473,7 @@ static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
 
     context.table = &table;
     context.plan = plan;
+    context.transaction = &db->transaction;
 
     /*
      * DELETE is implemented as table scan plus conditional record_delete.
@@ -469,6 +501,7 @@ static DBStatus executor_execute_update(DB *db, const UpdatePlan *plan) {
 
     context.table = &table;
     context.plan = plan;
+    context.transaction = &db->transaction;
 
     /*
      * UPDATE is implemented as table scan plus conditional record_update.
@@ -532,7 +565,7 @@ static DBStatus executor_execute_meta_command(
     return DB_ERROR;
 }
 
-DBStatus executor_execute(DB *db, const Plan *plan, FILE *out) {
+static DBStatus executor_execute_plan(DB *db, const Plan *plan, FILE *out) {
     if (db == NULL || plan == NULL) {
         return DB_ERROR;
     }
@@ -557,4 +590,46 @@ DBStatus executor_execute(DB *db, const Plan *plan, FILE *out) {
         default:
             return DB_ERROR;
     }
+}
+
+static DBStatus executor_execute_autocommit_callback(void *context) {
+    ExecuteContext *execute_context = context;
+
+    if (execute_context == NULL) {
+        return DB_ERROR;
+    }
+
+    /*
+     * This is the actual statement body run between transaction_begin and
+     * transaction_commit. Any error causes the transaction wrapper to rollback
+     * state and return the original failure.
+     */
+    return executor_execute_plan(
+        execute_context->db,
+        execute_context->plan,
+        execute_context->out
+    );
+}
+
+DBStatus executor_execute(DB *db, const Plan *plan, FILE *out) {
+    if (db == NULL || plan == NULL) {
+        return DB_ERROR;
+    }
+
+    ExecuteContext context;
+
+    context.db = db;
+    context.plan = plan;
+    context.out = out;
+
+    /*
+     * Public executor entry point: every statement is currently autocommit.
+     * Future explicit BEGIN support can bypass this wrapper while reusing
+     * executor_execute_plan for the actual work.
+     */
+    return transaction_execute_autocommit(
+        &db->transaction,
+        executor_execute_autocommit_callback,
+        &context
+    );
 }

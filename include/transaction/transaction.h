@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "common.h"
+#include "transaction/wal.h"
 
 typedef enum {
     TRANSACTION_STATE_IDLE,
@@ -15,6 +16,7 @@ typedef struct {
     uint64_t id;
     TransactionState state;
     bool autocommit;
+    WAL *wal;
 } Transaction;
 
 typedef DBStatus (*TransactionStatementCallback)(void *context);
@@ -27,6 +29,16 @@ typedef DBStatus (*TransactionStatementCallback)(void *context);
  * added.
  */
 DBStatus transaction_init(Transaction *transaction);
+
+/*
+ * Attaches the WAL used for BEGIN/COMMIT records.
+ */
+DBStatus transaction_attach_wal(Transaction *transaction, WAL *wal);
+
+/*
+ * Returns the active transaction id, or 0 when idle.
+ */
+uint64_t transaction_active_id(const Transaction *transaction);
 
 /*
  * Starts a transaction.

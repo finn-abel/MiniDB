@@ -66,6 +66,16 @@ DBStatus page_insert(
 );
 
 /*
+ * Returns the slot ID page_insert would use for a row of row_len bytes.
+ * This lets WAL callers know the RID before modifying page bytes.
+ */
+DBStatus page_next_insert_slot(
+    const uint8_t *page_bytes,
+    uint32_t row_len,
+    uint16_t *out_slot_id
+);
+
+/*
  * Gets a pointer to raw row bytes stored in a slot.
  * This does not copy the row data; out_ptr points inside page_bytes.
  * The slot must exist and must be active.

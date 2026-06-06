@@ -25,12 +25,15 @@ static void cleanup_db_dir(const char *path) {
     char catalog_path[MAX_DB_PATH];
     char table_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
+    char wal_path[MAX_DB_PATH];
 
     snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
     snprintf(table_path, sizeof(table_path), "%s/tables/users.tbl", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
+    snprintf(wal_path, sizeof(wal_path), "%s/minidb.wal", path);
 
     remove(table_path);
+    remove(wal_path);
     remove(catalog_path);
     rmdir(tables_dir);
     rmdir(path);
@@ -54,6 +57,9 @@ static void test_db_open_new_database(void) {
     assert(db.is_open == true);
     assert(strcmp(db.path, path) == 0);
     assert(db.catalog.table_count == 0);
+    assert(db.wal.is_open == true);
+    assert(db.transaction.wal == &db.wal);
+    assert(db.transaction.state == TRANSACTION_STATE_IDLE);
     assert(path_is_dir(path) == true);
     assert(path_is_dir("test_db_open_new/tables") == true);
 
@@ -154,6 +160,8 @@ static void test_db_close_resets_database(void) {
     assert(db.is_open == false);
     assert(db.path[0] == '\0');
     assert(db.catalog.table_count == 0);
+    assert(db.wal.is_open == false);
+    assert(db.transaction.state == TRANSACTION_STATE_IDLE);
 
     cleanup_db_dir(path);
 }

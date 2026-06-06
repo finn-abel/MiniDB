@@ -5,6 +5,8 @@
 
 #include "catalog.h"
 #include "common.h"
+#include "transaction/transaction.h"
+#include "transaction/wal.h"
 
 /*
  * DB represents an opened database.
@@ -14,6 +16,8 @@
 struct DB {
     char path[MAX_DB_PATH];
     Catalog catalog;
+    Transaction transaction;
+    WAL wal;
     bool is_open;
 };
 

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "common.h"
@@ -16,12 +17,15 @@ static void cleanup_db_dir(const char *path) {
     char catalog_path[MAX_DB_PATH];
     char users_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
+    char wal_path[MAX_DB_PATH];
 
     snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
     snprintf(users_path, sizeof(users_path), "%s/tables/users.tbl", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
+    snprintf(wal_path, sizeof(wal_path), "%s/minidb.wal", path);
 
     remove(users_path);
+    remove(wal_path);
     remove(catalog_path);
     rmdir(tables_dir);
     rmdir(path);
@@ -55,6 +59,14 @@ static void assert_next_line(FILE *file, const char *expected) {
     assert(strcmp(buffer, expected) == 0);
 }
 
+static long file_size(const char *path) {
+    struct stat info;
+
+    assert(stat(path, &info) == 0);
+
+    return info.st_size;
+}
+
 static void test_executor_create_table(void) {
     const char *path = "test_executor_create";
 
@@ -86,6 +98,8 @@ static void test_executor_insert_and_select_all(void) {
     setup_db(&db, path);
     execute_sql(&db, "CREATE TABLE users (id INT, name TEXT, age INT);", stdout);
     execute_sql(&db, "INSERT INTO users VALUES (1, \"Finn\", 20);", stdout);
+    assert(db.transaction.state == TRANSACTION_STATE_IDLE);
+    assert(file_size("test_executor_select_all/minidb.wal") > 0);
 
     out = tmpfile();
     assert(out != NULL);
@@ -278,6 +292,7 @@ static void test_executor_rejects_null_inputs(void) {
     assert(executor_execute(NULL, &plan, stdout) == DB_ERROR);
     assert(executor_execute(&db, NULL, stdout) == DB_ERROR);
     assert(executor_execute(&db, &plan, NULL) == DB_ERROR);
+    assert(db.transaction.state == TRANSACTION_STATE_IDLE);
 
     plan_free(&plan);
     binder_bound_statement_free(&bound);

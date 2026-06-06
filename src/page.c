@@ -171,6 +171,54 @@ DBStatus page_insert(
     return DB_OK;
 }
 
+DBStatus page_next_insert_slot(
+    const uint8_t *page_bytes,
+    uint32_t row_len,
+    uint16_t *out_slot_id
+) {
+    /*
+     * This mirrors page_insert's slot choice without copying row bytes or
+     * changing header boundaries. WAL uses it to log the physical RID before
+     * the page is modified.
+     */
+    if (
+        page_bytes == NULL ||
+        out_slot_id == NULL ||
+        row_len == 0 ||
+        row_len > UINT16_MAX
+    ) {
+        return DB_ERROR;
+    }
+
+    PageHeader header;
+    page_read_header(page_bytes, &header);
+
+    if (header.page_type != PAGE_TYPE_DATA) {
+        return DB_ERROR;
+    }
+
+    uint16_t slot_id = 0;
+    bool reused_slot = page_find_deleted_slot(page_bytes, &header, &slot_id);
+    uint32_t needed_space = row_len;
+
+    if (!reused_slot) {
+        /*
+         * No tombstone is available, so page_insert would append a new slot at
+         * the end of the slot directory.
+         */
+        needed_space += sizeof(PageSlot);
+        slot_id = header.slot_count;
+    }
+
+    if (page_free_space(page_bytes) < needed_space) {
+        return DB_FULL;
+    }
+
+    *out_slot_id = slot_id;
+
+    return DB_OK;
+}
+
 DBStatus page_get(
     uint8_t *page_bytes,
     uint16_t slot_id,

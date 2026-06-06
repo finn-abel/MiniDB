@@ -17,12 +17,15 @@ static void cleanup_db_dir(const char *path) {
     char catalog_path[MAX_DB_PATH];
     char users_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
+    char wal_path[MAX_DB_PATH];
 
     snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
     snprintf(users_path, sizeof(users_path), "%s/tables/users.tbl", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
+    snprintf(wal_path, sizeof(wal_path), "%s/minidb.wal", path);
 
     remove(users_path);
+    remove(wal_path);
     remove(catalog_path);
     rmdir(tables_dir);
     rmdir(path);

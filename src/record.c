@@ -9,6 +9,8 @@
 #include "rid.h"
 #include "row.h"
 #include "storage/free_space.h"
+#include "transaction/transaction.h"
+#include "transaction/wal.h"
 
 static uint32_t record_required_page_space(uint32_t row_len) {
     /*
@@ -18,7 +20,75 @@ static uint32_t record_required_page_space(uint32_t row_len) {
     return row_len + sizeof(PageSlot);
 }
 
-DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
+static DBStatus record_log_insert(
+    Transaction *transaction,
+    const char *table_file,
+    RID rid,
+    const uint8_t *row_bytes,
+    uint32_t row_len
+) {
+    /*
+     * Logged record operations are only valid inside an active transaction.
+     * The direct record_insert API remains available for low-level tests and
+     * recovery helpers that intentionally bypass transaction state.
+     */
+    if (transaction == NULL || transaction->wal == NULL) {
+        return DB_ERROR;
+    }
+
+    uint64_t txn_id = transaction_active_id(transaction);
+
+    if (txn_id == 0) {
+        return DB_ERROR;
+    }
+
+    return wal_log_insert(
+        transaction->wal,
+        txn_id,
+        table_file,
+        rid,
+        row_bytes,
+        row_len
+    );
+}
+
+static DBStatus record_log_delete(
+    Transaction *transaction,
+    const char *table_file,
+    RID rid,
+    const uint8_t *old_row_bytes,
+    uint32_t old_row_len
+) {
+    /*
+     * DELETE records carry the old row bytes. They are enough for the first
+     * redo-only recovery pass to know what row was removed and where.
+     */
+    if (transaction == NULL || transaction->wal == NULL) {
+        return DB_ERROR;
+    }
+
+    uint64_t txn_id = transaction_active_id(transaction);
+
+    if (txn_id == 0) {
+        return DB_ERROR;
+    }
+
+    return wal_log_delete(
+        transaction->wal,
+        txn_id,
+        table_file,
+        rid,
+        old_row_bytes,
+        old_row_len
+    );
+}
+
+static DBStatus record_insert_internal(
+    const char *table_file,
+    Row *row,
+    RID *out_rid,
+    Transaction *transaction
+) {
     if (table_file == NULL || row == NULL || out_rid == NULL) {
         return DB_ERROR;
     }
@@ -66,10 +136,43 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
         }
 
         /*
-         * page_insert will return DB_FULL if this page cannot fit the row.
+         * Preview the slot before modifying the page. This gives WAL the exact
+         * RID that page_insert should produce if the page still fits.
          */
         uint16_t slot_id = 0;
-        status = page_insert(page_buffer, row_bytes, row_len, &slot_id);
+        status = page_next_insert_slot(page_buffer, row_len, &slot_id);
+
+        if (status != DB_OK && status != DB_FULL) {
+            buffer_pool_unpin_page(table_file, page_id, false);
+            free(row_bytes);
+            return status;
+        }
+
+        if (status == DB_OK) {
+            if (transaction != NULL) {
+                RID logged_rid = {page_id, slot_id};
+
+                /*
+                 * Write-ahead rule: the INSERT record is forced to WAL before
+                 * the page bytes are changed in memory.
+                 */
+                status = record_log_insert(
+                    transaction,
+                    table_file,
+                    logged_rid,
+                    row_bytes,
+                    row_len
+                );
+
+                if (status != DB_OK) {
+                    buffer_pool_unpin_page(table_file, page_id, false);
+                    free(row_bytes);
+                    return status;
+                }
+            }
+
+            status = page_insert(page_buffer, row_bytes, row_len, &slot_id);
+        }
 
         if (status == DB_OK) {
             /*
@@ -184,6 +287,34 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
     }
 
     uint16_t slot_id = 0;
+    status = page_next_insert_slot(new_page_buffer, row_len, &slot_id);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
+
+    if (transaction != NULL) {
+        RID logged_rid = {new_page_id, slot_id};
+
+        /*
+         * Even for a brand-new page, log the row before allocating/copying the
+         * page into the buffer pool. Recovery can recreate missing pages.
+         */
+        status = record_log_insert(
+            transaction,
+            table_file,
+            logged_rid,
+            row_bytes,
+            row_len
+        );
+
+        if (status != DB_OK) {
+            free(row_bytes);
+            return status;
+        }
+    }
+
     status = page_insert(new_page_buffer, row_bytes, row_len, &slot_id);
 
     if (status != DB_OK) {
@@ -238,6 +369,23 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
     free(row_bytes);
 
     return DB_OK;
+}
+
+DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
+    return record_insert_internal(table_file, row, out_rid, NULL);
+}
+
+DBStatus record_insert_logged(
+    const char *table_file,
+    Row *row,
+    RID *out_rid,
+    Transaction *transaction
+) {
+    if (transaction == NULL) {
+        return DB_ERROR;
+    }
+
+    return record_insert_internal(table_file, row, out_rid, transaction);
 }
 
 DBStatus record_get(const char *table_file, RID rid, Row *out_row) {
@@ -374,7 +522,146 @@ DBStatus record_update(const char *table_file, RID rid, Row *row, RID *out_rid) 
     return record_insert(table_file, row, out_rid);
 }
 
-DBStatus record_delete(const char *table_file, RID rid) {
+DBStatus record_update_logged(
+    const char *table_file,
+    RID rid,
+    Row *row,
+    RID *out_rid,
+    Transaction *transaction
+) {
+    if (table_file == NULL || row == NULL || out_rid == NULL || transaction == NULL) {
+        return DB_ERROR;
+    }
+
+    uint8_t *row_bytes = NULL;
+    uint32_t row_len = 0;
+
+    DBStatus status = row_serialize(row, &row_bytes, &row_len);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    uint8_t *page_buffer = NULL;
+
+    status = buffer_pool_fetch_page(table_file, rid.page_id, &page_buffer);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
+
+    uint8_t *old_row_bytes = NULL;
+    uint32_t old_row_len = 0;
+
+    status = page_get(page_buffer, rid.slot_id, &old_row_bytes, &old_row_len);
+
+    if (status != DB_OK) {
+        buffer_pool_unpin_page(table_file, rid.page_id, false);
+        free(row_bytes);
+        return status;
+    }
+
+    uint8_t *old_row_copy = malloc(old_row_len);
+
+    if (old_row_copy == NULL) {
+        buffer_pool_unpin_page(table_file, rid.page_id, false);
+        free(row_bytes);
+        return DB_ERROR;
+    }
+
+    memcpy(old_row_copy, old_row_bytes, old_row_len);
+
+    if (row_len <= old_row_len) {
+        /*
+         * In-place UPDATE is represented in this simple WAL as logical
+         * delete-old-row followed by insert-new-row at the same RID.
+         */
+        status = record_log_delete(
+            transaction,
+            table_file,
+            rid,
+            old_row_copy,
+            old_row_len
+        );
+
+        if (status == DB_OK) {
+            status = record_log_insert(transaction, table_file, rid, row_bytes, row_len);
+        }
+
+        if (status != DB_OK) {
+            buffer_pool_unpin_page(table_file, rid.page_id, false);
+            free(old_row_copy);
+            free(row_bytes);
+            return status;
+        }
+
+        status = page_update(page_buffer, rid.slot_id, row_bytes, row_len);
+
+        if (status != DB_OK) {
+            buffer_pool_unpin_page(table_file, rid.page_id, false);
+            free(old_row_copy);
+            free(row_bytes);
+            return status;
+        }
+
+        status = free_space_update(
+            table_file,
+            rid.page_id,
+            page_insertable_space(page_buffer)
+        );
+
+        if (status != DB_OK) {
+            buffer_pool_unpin_page(table_file, rid.page_id, false);
+            free(old_row_copy);
+            free(row_bytes);
+            return status;
+        }
+
+        status = buffer_pool_unpin_page(table_file, rid.page_id, true);
+
+        if (status != DB_OK) {
+            free(old_row_copy);
+            free(row_bytes);
+            return status;
+        }
+
+        status = buffer_pool_flush_page(table_file, rid.page_id);
+
+        if (status != DB_OK) {
+            free(old_row_copy);
+            free(row_bytes);
+            return status;
+        }
+
+        *out_rid = rid;
+        free(old_row_copy);
+        free(row_bytes);
+        return DB_OK;
+    }
+
+    buffer_pool_unpin_page(table_file, rid.page_id, false);
+    free(old_row_copy);
+    free(row_bytes);
+
+    /*
+     * Larger updates cannot fit in the old slot. Reuse the logged delete and
+     * logged insert paths so WAL describes the physical movement explicitly.
+     */
+    status = record_delete_logged(table_file, rid, transaction);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return record_insert_logged(table_file, row, out_rid, transaction);
+}
+
+static DBStatus record_delete_internal(
+    const char *table_file,
+    RID rid,
+    Transaction *transaction
+) {
     if (table_file == NULL) {
         return DB_ERROR;
     }
@@ -388,6 +675,35 @@ DBStatus record_delete(const char *table_file, RID rid) {
 
     if (status != DB_OK) {
         return status;
+    }
+
+    uint8_t *row_bytes = NULL;
+    uint32_t row_len = 0;
+
+    status = page_get(page_buffer, rid.slot_id, &row_bytes, &row_len);
+
+    if (status != DB_OK) {
+        buffer_pool_unpin_page(table_file, rid.page_id, false);
+        return status;
+    }
+
+    if (transaction != NULL) {
+        /*
+         * page_get points into the pinned page. Log while the page is still
+         * pinned and before page_delete flips the slot flag to deleted.
+         */
+        status = record_log_delete(
+            transaction,
+            table_file,
+            rid,
+            row_bytes,
+            row_len
+        );
+
+        if (status != DB_OK) {
+            buffer_pool_unpin_page(table_file, rid.page_id, false);
+            return status;
+        }
     }
 
     /*
@@ -515,4 +831,20 @@ DBStatus record_scan(
     }
 
     return DB_OK;
+}
+
+DBStatus record_delete(const char *table_file, RID rid) {
+    return record_delete_internal(table_file, rid, NULL);
+}
+
+DBStatus record_delete_logged(
+    const char *table_file,
+    RID rid,
+    Transaction *transaction
+) {
+    if (transaction == NULL) {
+        return DB_ERROR;
+    }
+
+    return record_delete_internal(table_file, rid, transaction);
 }
