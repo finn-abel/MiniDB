@@ -279,11 +279,12 @@ DBStatus free_space_rebuild(const char *table_file) {
         }
 
         /*
-         * page_free_space reads only page metadata, so rebuild does not need to
-         * deserialize rows.
+         * page_insertable_space reads only page metadata, so rebuild does not
+         * need to deserialize rows. Tombstone slots count as reusable slot
+         * space, but deleted row bytes are still not reclaimed.
          */
         map->entries[map->entry_count].page_id = page_id;
-        map->entries[map->entry_count].free_bytes = page_free_space(page_buffer);
+        map->entries[map->entry_count].free_bytes = page_insertable_space(page_buffer);
         map->entry_count++;
     }
 

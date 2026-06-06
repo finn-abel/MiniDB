@@ -35,6 +35,34 @@ static void append_page_with_row(const char *path, uint32_t row_len) {
     assert(pager_close(&pager) == DB_OK);
 }
 
+static uint32_t append_page_with_deleted_row(const char *path, uint32_t row_len) {
+    Pager pager;
+    uint8_t page[PAGE_SIZE];
+    uint8_t row_bytes[PAGE_SIZE];
+    uint16_t slot_id = 0;
+    uint32_t page_id = 0;
+    uint32_t insertable_space = 0;
+
+    assert(pager_open(&pager, path) == DB_OK);
+    page_id = pager_num_pages(&pager);
+
+    assert(page_init(page, page_id) == DB_OK);
+
+    for (uint32_t i = 0; i < row_len; i++) {
+        row_bytes[i] = (uint8_t)(i % 255);
+    }
+
+    assert(page_insert(page, row_bytes, row_len, &slot_id) == DB_OK);
+    assert(page_delete(page, slot_id) == DB_OK);
+
+    insertable_space = page_insertable_space(page);
+
+    assert(pager_allocate_page(&pager, page, &page_id) == DB_OK);
+    assert(pager_close(&pager) == DB_OK);
+
+    return insertable_space;
+}
+
 static void test_free_space_rebuild_and_find_page(void) {
     const char *path = "test_free_space_rebuild.db";
     uint32_t page_id = 99;
@@ -50,6 +78,23 @@ static void test_free_space_rebuild_and_find_page(void) {
     cleanup_file(path);
 }
 
+static void test_free_space_rebuild_counts_deleted_slot_space(void) {
+    const char *path = "test_free_space_deleted_slot.db";
+    uint32_t page_id = 99;
+    uint32_t insertable_space = 0;
+
+    cleanup_file(path);
+
+    insertable_space = append_page_with_deleted_row(path, 100);
+
+    assert(free_space_rebuild(path) == DB_OK);
+    assert(free_space_find_page(path, insertable_space, &page_id) == DB_OK);
+    assert(page_id == 0);
+    assert(free_space_find_page(path, insertable_space + 1, &page_id) == DB_NOT_FOUND);
+
+    cleanup_file(path);
+}
+
 static void test_free_space_find_lazily_rebuilds_map(void) {
     const char *path = "test_free_space_lazy.db";
     uint32_t page_id = 99;
@@ -60,6 +105,21 @@ static void test_free_space_find_lazily_rebuilds_map(void) {
 
     assert(free_space_find_page(path, 2000, &page_id) == DB_OK);
     assert(page_id == 1);
+
+    cleanup_file(path);
+}
+
+static void test_free_space_lazy_rebuild_counts_deleted_slot_space(void) {
+    const char *path = "test_free_space_lazy_deleted_slot.db";
+    uint32_t page_id = 99;
+    uint32_t insertable_space = 0;
+
+    cleanup_file(path);
+
+    insertable_space = append_page_with_deleted_row(path, 100);
+
+    assert(free_space_find_page(path, insertable_space, &page_id) == DB_OK);
+    assert(page_id == 0);
 
     cleanup_file(path);
 }
@@ -205,7 +265,9 @@ static void test_free_space_rejects_null_inputs(void) {
 
 int main(void) {
     test_free_space_rebuild_and_find_page();
+    test_free_space_rebuild_counts_deleted_slot_space();
     test_free_space_find_lazily_rebuilds_map();
+    test_free_space_lazy_rebuild_counts_deleted_slot_space();
     test_free_space_update_changes_choice();
     test_free_space_update_can_create_map();
     test_free_space_update_exact_match();

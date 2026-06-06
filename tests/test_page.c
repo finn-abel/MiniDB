@@ -204,6 +204,27 @@ static void test_page_free_space_null(void) {
     assert(page_free_space(NULL) == 0);
 }
 
+static void test_page_insertable_space_counts_deleted_slot(void) {
+    uint8_t page[PAGE_SIZE];
+
+    assert(page_init(page, 1) == DB_OK);
+
+    uint8_t row_bytes[] = {1, 2, 3, 4};
+    uint16_t slot_id = 0;
+
+    assert(page_insert(page, row_bytes, sizeof(row_bytes), &slot_id) == DB_OK);
+
+    uint32_t free_before_delete = page_free_space(page);
+
+    assert(page_delete(page, slot_id) == DB_OK);
+    assert(page_free_space(page) == free_before_delete);
+    assert(page_insertable_space(page) == free_before_delete + sizeof(PageSlot));
+}
+
+static void test_page_insertable_space_null(void) {
+    assert(page_insertable_space(NULL) == 0);
+}
+
 static void test_page_slot_count_null(void) {
     assert(page_slot_count(NULL) == 0);
 }
@@ -252,6 +273,8 @@ int main(void) {
     test_page_reuses_deleted_slot();
     test_page_free_space_decreases_after_insert();
     test_page_free_space_null();
+    test_page_insertable_space_counts_deleted_slot();
+    test_page_insertable_space_null();
     test_page_slot_count_null();
     test_page_slot_is_active_invalid_inputs();
     test_page_insert_until_full();

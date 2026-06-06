@@ -91,6 +91,14 @@ DBStatus page_delete(uint8_t *page_bytes, uint16_t slot_id);
 uint32_t page_free_space(const uint8_t *page_bytes);
 
 /*
+ * Returns the space available for a future insert.
+ *
+ * This starts with page_free_space and adds the size of one PageSlot when a
+ * deleted slot can be reused. Deleted row bytes are still not reclaimed.
+ */
+uint32_t page_insertable_space(const uint8_t *page_bytes);
+
+/*
  * Returns the number of slots currently in the slot directory.
  * Some of these slots may be deleted.
  * Use page_slot_is_active to check whether a slot is live.

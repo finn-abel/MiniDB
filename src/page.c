@@ -270,6 +270,32 @@ uint32_t page_free_space(const uint8_t *page_bytes) {
     return (uint32_t)(header.free_end - header.free_start);
 }
 
+uint32_t page_insertable_space(const uint8_t *page_bytes) {
+    if (page_bytes == NULL) {
+        return 0;
+    }
+
+    PageHeader header;
+    page_read_header(page_bytes, &header);
+
+    if (header.page_type != PAGE_TYPE_DATA) {
+        return 0;
+    }
+
+    uint32_t free_space = page_free_space(page_bytes);
+    uint16_t deleted_slot_id = 0;
+
+    /*
+     * A tombstone slot does not free old row bytes, but it does let the next
+     * insert avoid allocating a new slot-directory entry.
+     */
+    if (page_find_deleted_slot(page_bytes, &header, &deleted_slot_id)) {
+        free_space += sizeof(PageSlot);
+    }
+
+    return free_space;
+}
+
 uint16_t page_slot_count(const uint8_t *page_bytes) {
     if (page_bytes == NULL) {
         return 0;

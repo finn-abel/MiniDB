@@ -80,7 +80,7 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
             status = free_space_update(
                 table_file,
                 page_id,
-                page_free_space(page_buffer)
+                page_insertable_space(page_buffer)
             );
 
             if (status != DB_OK) {
@@ -128,7 +128,7 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
         status = free_space_update(
             table_file,
             page_id,
-            page_free_space(page_buffer)
+            page_insertable_space(page_buffer)
         );
 
         if (status != DB_OK) {
@@ -209,7 +209,7 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
     status = free_space_update(
         table_file,
         new_page_id,
-        page_free_space(page_buffer)
+        page_insertable_space(page_buffer)
     );
 
     if (status != DB_OK) {
@@ -319,7 +319,7 @@ DBStatus record_delete(const char *table_file, RID rid) {
     status = free_space_update(
         table_file,
         rid.page_id,
-        page_free_space(page_buffer)
+        page_insertable_space(page_buffer)
     );
 
     if (status != DB_OK) {
