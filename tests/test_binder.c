@@ -17,6 +17,7 @@ static void cleanup_db_dir(const char *path) {
     char catalog_path[MAX_DB_PATH];
     char users_path[MAX_DB_PATH];
     char users_index_path[MAX_DB_PATH];
+    char users_age_index_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
     char indexes_dir[MAX_DB_PATH];
     char wal_path[MAX_DB_PATH];
@@ -24,12 +25,14 @@ static void cleanup_db_dir(const char *path) {
     snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
     snprintf(users_path, sizeof(users_path), "%s/tables/users.tbl", path);
     snprintf(users_index_path, sizeof(users_index_path), "%s/indexes/users_pk.btree", path);
+    snprintf(users_age_index_path, sizeof(users_age_index_path), "%s/indexes/users_age_idx.btree", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
     snprintf(indexes_dir, sizeof(indexes_dir), "%s/indexes", path);
     snprintf(wal_path, sizeof(wal_path), "%s/minidb.wal", path);
 
     remove(users_path);
     remove(users_index_path);
+    remove(users_age_index_path);
     remove(wal_path);
     remove(catalog_path);
     rmdir(tables_dir);
@@ -114,6 +117,48 @@ static void test_binder_rejects_create_duplicate_columns(void) {
     parse_statement("CREATE TABLE users (id INT, id TEXT);", &statement);
 
     assert(binder_bind(&db, &statement, &bound) == DB_ERROR);
+
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_binder_bind_create_index(void) {
+    const char *path = "test_binder_create_index";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    parse_statement("CREATE INDEX users_age_idx ON users (age);", &statement);
+
+    assert(binder_bind(&db, &statement, &bound) == DB_OK);
+
+    assert(bound.statement.type == STATEMENT_CREATE_INDEX);
+    assert(strcmp(bound.statement.create_index.index_name, "users_age_idx") == 0);
+    assert(strcmp(bound.table_schema.table_name, "users") == 0);
+    assert(bound.has_table_schema == true);
+
+    binder_bound_statement_free(&bound);
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_binder_rejects_create_index_on_text_column(void) {
+    const char *path = "test_binder_create_index_text";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    parse_statement("CREATE INDEX users_name_idx ON users (name);", &statement);
+
+    assert(binder_bind(&db, &statement, &bound) == DB_TYPE_ERROR);
 
     ast_statement_free(&statement);
     assert(db_close(&db) == DB_OK);
@@ -480,6 +525,8 @@ int main(void) {
     test_binder_bind_create_table();
     test_binder_rejects_create_existing_table();
     test_binder_rejects_create_duplicate_columns();
+    test_binder_bind_create_index();
+    test_binder_rejects_create_index_on_text_column();
     test_binder_bind_insert();
     test_binder_rejects_insert_missing_table();
     test_binder_rejects_insert_wrong_value_count();

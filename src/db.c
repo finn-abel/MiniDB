@@ -149,6 +149,31 @@ static DBStatus db_primary_key_index_path(
     return DB_OK;
 }
 
+static DBStatus db_secondary_index_path(
+    const DB *db,
+    const char *index_name,
+    char *out_path,
+    size_t out_size
+) {
+    if (db == NULL || index_name == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    int written = snprintf(
+        out_path,
+        out_size,
+        "%s/indexes/%s.btree",
+        db->path,
+        index_name
+    );
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
 typedef struct {
     /*
      * record_scan only gives us row bytes and RIDs. The rebuild context carries
@@ -156,7 +181,7 @@ typedef struct {
      */
     BTree *tree;
     const Schema *schema;
-    uint16_t primary_key_index;
+    uint16_t key_column_index;
 } DBIndexRebuildContext;
 
 static DBStatus db_index_rebuild_callback(const Row *row, RID rid, void *context) {
@@ -166,7 +191,7 @@ static DBStatus db_index_rebuild_callback(const Row *row, RID rid, void *context
         return DB_ERROR;
     }
 
-    const Value *key = row_get_value_const(row, rebuild->primary_key_index);
+    const Value *key = row_get_value_const(row, rebuild->key_column_index);
 
     if (key == NULL || key->type != VALUE_INT) {
         return DB_ERROR;
@@ -175,36 +200,18 @@ static DBStatus db_index_rebuild_callback(const Row *row, RID rid, void *context
     return btree_insert(rebuild->tree, key->int_value, rid);
 }
 
-static DBStatus db_rebuild_primary_key_index(const DB *db, const Schema *schema) {
-    uint16_t primary_key_index = 0;
-    DBStatus status = schema_get_primary_key_index(schema, &primary_key_index);
-
-    if (status == DB_NOT_FOUND) {
-        return DB_OK;
-    }
-
-    if (status != DB_OK) {
-        return status;
-    }
-
-    char index_path[MAX_DB_PATH];
-    status = db_primary_key_index_path(
-        db,
-        schema->table_name,
-        index_path,
-        sizeof(index_path)
-    );
-
-    if (status != DB_OK) {
-        return status;
-    }
-
+static DBStatus db_rebuild_int_index(
+    const DB *db,
+    const Schema *schema,
+    uint16_t key_column_index,
+    const char *index_path
+) {
     /*
      * Rebuild starts from a blank index file and replays the authoritative
      * table rows. The buffer pool may still have cached pages for this path
      * from an earlier open, so discard them before truncating the file.
      */
-    status = buffer_pool_discard_file(index_path);
+    DBStatus status = buffer_pool_discard_file(index_path);
 
     if (status != DB_OK) {
         return status;
@@ -236,7 +243,7 @@ static DBStatus db_rebuild_primary_key_index(const DB *db, const Schema *schema)
 
         context.tree = &tree;
         context.schema = schema;
-        context.primary_key_index = primary_key_index;
+        context.key_column_index = key_column_index;
 
         status = record_scan(table_file, db_index_rebuild_callback, &context);
     }
@@ -248,6 +255,67 @@ static DBStatus db_rebuild_primary_key_index(const DB *db, const Schema *schema)
     }
 
     return close_status;
+}
+
+static DBStatus db_rebuild_primary_key_index(const DB *db, const Schema *schema) {
+    uint16_t primary_key_index = 0;
+    DBStatus status = schema_get_primary_key_index(schema, &primary_key_index);
+
+    if (status == DB_NOT_FOUND) {
+        return DB_OK;
+    }
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    char index_path[MAX_DB_PATH];
+    status = db_primary_key_index_path(
+        db,
+        schema->table_name,
+        index_path,
+        sizeof(index_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return db_rebuild_int_index(db, schema, primary_key_index, index_path);
+}
+
+static DBStatus db_rebuild_secondary_index(
+    const DB *db,
+    const CatalogIndex *index
+) {
+    Schema schema;
+    uint16_t column_index = 0;
+
+    DBStatus status = catalog_get_schema(db, index->table_name, &schema);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = schema_get_column_index(&schema, index->column_name, &column_index);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    char index_path[MAX_DB_PATH];
+    status = db_secondary_index_path(
+        db,
+        index->index_name,
+        index_path,
+        sizeof(index_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return db_rebuild_int_index(db, &schema, column_index, index_path);
 }
 
 static DBStatus db_rebuild_primary_key_indexes(const DB *db) {
@@ -262,6 +330,26 @@ static DBStatus db_rebuild_primary_key_indexes(const DB *db) {
          * so the access path matches the durable rows.
          */
         DBStatus status = db_rebuild_primary_key_index(db, &db->catalog.tables[i]);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    return DB_OK;
+}
+
+static DBStatus db_rebuild_secondary_indexes(const DB *db) {
+    if (db == NULL) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.index_count; i++) {
+        /*
+         * Explicit indexes are also derived from table rows. Rebuilding at
+         * open keeps them aligned after WAL recovery or a previous crash.
+         */
+        DBStatus status = db_rebuild_secondary_index(db, &db->catalog.indexes[i]);
 
         if (status != DB_OK) {
             return status;
@@ -406,6 +494,14 @@ DBStatus db_open(DB *db, const char *path) {
     }
 
     status = db_rebuild_primary_key_indexes(db);
+
+    if (status != DB_OK) {
+        wal_close(&db->wal);
+        memset(db, 0, sizeof(DB));
+        return status;
+    }
+
+    status = db_rebuild_secondary_indexes(db);
 
     if (status != DB_OK) {
         wal_close(&db->wal);

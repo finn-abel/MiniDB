@@ -96,6 +96,31 @@ static DBStatus catalog_build_primary_key_index_path(
     return DB_OK;
 }
 
+static DBStatus catalog_build_secondary_index_path(
+    const DB *db,
+    const char *index_name,
+    char *out_path,
+    uint32_t out_size
+) {
+    if (db == NULL || index_name == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    int written = snprintf(
+        out_path,
+        out_size,
+        "%s/indexes/%s.btree",
+        db->path,
+        index_name
+    );
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
 static const char *catalog_type_to_string(ValueType type) {
     /*
      * Convert internal value types into catalog text.
@@ -276,6 +301,41 @@ DBStatus catalog_load(DB *db) {
 
     while (fgets(line, sizeof(line), file) != NULL) {
         char table_name[MAX_TABLE_NAME];
+        char index_name[MAX_INDEX_NAME];
+        char index_table_name[MAX_TABLE_NAME];
+        char index_column_name[MAX_COLUMN_NAME];
+
+        /*
+         * Secondary indexes are saved as standalone lines after table blocks:
+         * INDEX idx_users_age users age UNIQUE
+         */
+        if (
+            sscanf(
+                line,
+                "INDEX %63s %63s %63s",
+                index_name,
+                index_table_name,
+                index_column_name
+            ) == 3
+        ) {
+            if (db->catalog.index_count >= MAX_CATALOG_INDEXES) {
+                fclose(file);
+                return DB_FULL;
+            }
+
+            CatalogIndex *index = &db->catalog.indexes[db->catalog.index_count];
+
+            strncpy(index->index_name, index_name, sizeof(index->index_name) - 1);
+            index->index_name[sizeof(index->index_name) - 1] = '\0';
+            strncpy(index->table_name, index_table_name, sizeof(index->table_name) - 1);
+            index->table_name[sizeof(index->table_name) - 1] = '\0';
+            strncpy(index->column_name, index_column_name, sizeof(index->column_name) - 1);
+            index->column_name[sizeof(index->column_name) - 1] = '\0';
+            index->unique = true;
+            db->catalog.index_count++;
+
+            continue;
+        }
 
         /*
          * A table definition starts with:
@@ -465,8 +525,73 @@ DBStatus catalog_save(const DB *db) {
         fprintf(file, "END\n");
     }
 
+    for (uint16_t i = 0; i < db->catalog.index_count; i++) {
+        const CatalogIndex *index = &db->catalog.indexes[i];
+
+        fprintf(
+            file,
+            "INDEX %s %s %s%s\n",
+            index->index_name,
+            index->table_name,
+            index->column_name,
+            index->unique ? " UNIQUE" : ""
+        );
+    }
+
     if (fclose(file) != 0) {
         return DB_IO_ERROR;
+    }
+
+    return DB_OK;
+}
+
+DBStatus catalog_create_index(DB *db, const CatalogIndex *index) {
+    if (db == NULL || index == NULL) {
+        return DB_ERROR;
+    }
+
+    if (
+        catalog_index_exists(db, index->index_name) ||
+        !catalog_table_exists(db, index->table_name)
+    ) {
+        return DB_ERROR;
+    }
+
+    if (db->catalog.index_count >= MAX_CATALOG_INDEXES) {
+        return DB_FULL;
+    }
+
+    char index_path[MAX_DB_PATH];
+
+    DBStatus status = catalog_build_secondary_index_path(
+        db,
+        index->index_name,
+        index_path,
+        sizeof(index_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    FILE *file = fopen(index_path, "rb");
+
+    if (file == NULL) {
+        return DB_IO_ERROR;
+    }
+
+    if (fclose(file) != 0) {
+        return DB_IO_ERROR;
+    }
+
+    db->catalog.indexes[db->catalog.index_count] = *index;
+    db->catalog.index_count++;
+
+    status = catalog_save(db);
+
+    if (status != DB_OK) {
+        db->catalog.index_count--;
+        return status;
     }
 
     return DB_OK;
@@ -574,6 +699,45 @@ bool catalog_table_exists(const DB *db, const char *table_name) {
     }
 
     return false;
+}
+
+bool catalog_index_exists(const DB *db, const char *index_name) {
+    if (db == NULL || index_name == NULL) {
+        return false;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.index_count; i++) {
+        if (strcmp(db->catalog.indexes[i].index_name, index_name) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+DBStatus catalog_find_index_for_column(
+    const DB *db,
+    const char *table_name,
+    const char *column_name,
+    CatalogIndex *out_index
+) {
+    if (db == NULL || table_name == NULL || column_name == NULL || out_index == NULL) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.index_count; i++) {
+        const CatalogIndex *index = &db->catalog.indexes[i];
+
+        if (
+            strcmp(index->table_name, table_name) == 0 &&
+            strcmp(index->column_name, column_name) == 0
+        ) {
+            *out_index = *index;
+            return DB_OK;
+        }
+    }
+
+    return DB_NOT_FOUND;
 }
 
 void catalog_list_tables(const DB *db, FILE *out) {

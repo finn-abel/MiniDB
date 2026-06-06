@@ -16,6 +16,7 @@
  */
 typedef enum {
     STATEMENT_CREATE_TABLE,
+    STATEMENT_CREATE_INDEX,
     STATEMENT_INSERT,
     STATEMENT_SELECT,
     STATEMENT_DELETE,
@@ -34,6 +35,18 @@ typedef struct {
     uint16_t column_count;
     Column columns[MAX_COLUMNS];
 } CreateTableStatement;
+
+/*
+ * CREATE INDEX index_name ON table_name (column_name)
+ *
+ * MiniDB currently backs explicit indexes with the same B+ tree primitive as
+ * primary keys, which means one integer key maps to one RID.
+ */
+typedef struct {
+    char index_name[MAX_INDEX_NAME];
+    char table_name[MAX_TABLE_NAME];
+    char column_name[MAX_COLUMN_NAME];
+} CreateIndexStatement;
 
 /*
  * INSERT INTO table_name VALUES (...values...)
@@ -99,6 +112,7 @@ typedef struct {
 
     union {
         CreateTableStatement create_table;
+        CreateIndexStatement create_index;
         InsertStatement insert;
         SelectStatement select;
         DeleteStatement delete_statement;
@@ -137,6 +151,13 @@ DBStatus ast_create_table_add_column_with_constraints(
     ValueType type,
     bool not_null,
     bool primary_key
+);
+
+DBStatus ast_create_index_init(
+    CreateIndexStatement *statement,
+    const char *index_name,
+    const char *table_name,
+    const char *column_name
 );
 
 /*

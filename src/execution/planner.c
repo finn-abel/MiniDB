@@ -86,6 +86,57 @@ static DBStatus planner_build_create_table_plan(
     return DB_OK;
 }
 
+static DBStatus planner_build_create_index_plan(
+    const BoundStatement *bound,
+    Plan *out_plan
+) {
+    const CreateIndexStatement *create_index = &bound->statement.create_index;
+
+    DBStatus status = plan_init(out_plan, PLAN_CREATE_INDEX);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = planner_copy_name(
+        out_plan->create_index.index.index_name,
+        sizeof(out_plan->create_index.index.index_name),
+        create_index->index_name
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = planner_copy_name(
+        out_plan->create_index.index.table_name,
+        sizeof(out_plan->create_index.index.table_name),
+        create_index->table_name
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = planner_copy_name(
+        out_plan->create_index.index.column_name,
+        sizeof(out_plan->create_index.index.column_name),
+        create_index->column_name
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * Explicit indexes are unique while the B+ tree stores a single RID per
+     * key. This flag makes that behavior visible in catalog metadata.
+     */
+    out_plan->create_index.index.unique = true;
+
+    return DB_OK;
+}
+
 static DBStatus planner_build_insert_plan(
     const BoundStatement *bound,
     Plan *out_plan
@@ -328,6 +379,9 @@ DBStatus planner_create_plan(const BoundStatement *bound, Plan *out_plan) {
     switch (bound->statement.type) {
         case STATEMENT_CREATE_TABLE:
             status = planner_build_create_table_plan(bound, out_plan);
+            break;
+        case STATEMENT_CREATE_INDEX:
+            status = planner_build_create_index_plan(bound, out_plan);
             break;
         case STATEMENT_INSERT:
             status = planner_build_insert_plan(bound, out_plan);

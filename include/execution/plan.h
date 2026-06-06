@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "common.h"
+#include "catalog.h"
 #include "row.h"
 #include "schema.h"
 #include "sql/ast.h"
@@ -17,6 +18,7 @@
  */
 typedef enum {
     PLAN_CREATE_TABLE,
+    PLAN_CREATE_INDEX,
     PLAN_INSERT,
     PLAN_SELECT,
     PLAN_DELETE,
@@ -102,6 +104,10 @@ typedef struct {
     Schema schema;
 } CreateTablePlan;
 
+typedef struct {
+    CatalogIndex index;
+} CreateIndexPlan;
+
 /*
  * MetaCommandPlan preserves shell commands for shell-level execution.
  */
@@ -118,6 +124,7 @@ typedef struct {
 
     union {
         CreateTablePlan create_table;
+        CreateIndexPlan create_index;
         InsertPlan insert;
         SelectPlan select;
         DeletePlan delete_plan;

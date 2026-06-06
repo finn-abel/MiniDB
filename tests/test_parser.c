@@ -45,6 +45,19 @@ static void test_parser_create_table_with_constraints(void) {
     ast_statement_free(&statement);
 }
 
+static void test_parser_create_index(void) {
+    Statement statement;
+
+    assert(parser_parse("CREATE INDEX users_age_idx ON users (age);", &statement) == DB_OK);
+
+    assert(statement.type == STATEMENT_CREATE_INDEX);
+    assert(strcmp(statement.create_index.index_name, "users_age_idx") == 0);
+    assert(strcmp(statement.create_index.table_name, "users") == 0);
+    assert(strcmp(statement.create_index.column_name, "age") == 0);
+
+    ast_statement_free(&statement);
+}
+
 static void test_parser_insert(void) {
     Statement statement;
 
@@ -276,6 +289,7 @@ static void test_parser_rejects_bad_update(void) {
 int main(void) {
     test_parser_create_table();
     test_parser_create_table_with_constraints();
+    test_parser_create_index();
     test_parser_insert();
     test_parser_select_star();
     test_parser_select_columns_with_where();

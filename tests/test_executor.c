@@ -17,6 +17,7 @@ static void cleanup_db_dir(const char *path) {
     char catalog_path[MAX_DB_PATH];
     char users_path[MAX_DB_PATH];
     char users_index_path[MAX_DB_PATH];
+    char users_age_index_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
     char indexes_dir[MAX_DB_PATH];
     char wal_path[MAX_DB_PATH];
@@ -24,12 +25,14 @@ static void cleanup_db_dir(const char *path) {
     snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
     snprintf(users_path, sizeof(users_path), "%s/tables/users.tbl", path);
     snprintf(users_index_path, sizeof(users_index_path), "%s/indexes/users_pk.btree", path);
+    snprintf(users_age_index_path, sizeof(users_age_index_path), "%s/indexes/users_age_idx.btree", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
     snprintf(indexes_dir, sizeof(indexes_dir), "%s/indexes", path);
     snprintf(wal_path, sizeof(wal_path), "%s/minidb.wal", path);
 
     remove(users_path);
     remove(users_index_path);
+    remove(users_age_index_path);
     remove(wal_path);
     remove(catalog_path);
     rmdir(tables_dir);
@@ -269,6 +272,72 @@ static void test_executor_primary_key_schema_persists_after_reopen(void) {
     cleanup_db_dir(path);
 }
 
+static void test_executor_secondary_index_workflow(void) {
+    const char *path = "test_executor_secondary_index";
+
+    DB db;
+    FILE *out;
+
+    setup_db(&db, path);
+    execute_sql(&db, "CREATE TABLE users (id INT PRIMARY KEY, name TEXT, age INT);", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (1, \"Finn\", 20);", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (2, \"Alex\", 17);", stdout);
+    execute_sql(&db, "CREATE INDEX users_age_idx ON users (age);", stdout);
+
+    assert(db.catalog.index_count == 1);
+    assert(strcmp(db.catalog.indexes[0].index_name, "users_age_idx") == 0);
+    assert(strcmp(db.catalog.indexes[0].column_name, "age") == 0);
+    assert(db.catalog.indexes[0].unique == true);
+
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT name FROM users WHERE age = 17;", out);
+    rewind(out);
+    assert_next_line(out, "Alex\n");
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    assert(execute_sql_status(&db, "INSERT INTO users VALUES (3, \"Sam\", 17);", stdout) == DB_ERROR);
+
+    execute_sql(&db, "UPDATE users SET age = 18 WHERE age = 17;", stdout);
+
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT name FROM users WHERE age = 17;", out);
+    rewind(out);
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    assert(db_close(&db) == DB_OK);
+    assert(db_open(&db, path) == DB_OK);
+
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT name FROM users WHERE age = 18;", out);
+    rewind(out);
+    assert_next_line(out, "Alex\n");
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    execute_sql(&db, "DELETE FROM users WHERE age = 18;", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (3, \"Sam\", 18);", stdout);
+
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT name FROM users WHERE age = 18;", out);
+    rewind(out);
+    assert_next_line(out, "Sam\n");
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
 static void test_executor_select_with_filter_and_project(void) {
     const char *path = "test_executor_select_filter_project";
 
@@ -462,6 +531,7 @@ int main(void) {
     test_executor_primary_key_update_maintains_index();
     test_executor_primary_key_delete_maintains_index();
     test_executor_primary_key_schema_persists_after_reopen();
+    test_executor_secondary_index_workflow();
     test_executor_select_with_filter_and_project();
     test_executor_delete_with_condition();
     test_executor_delete_without_condition();

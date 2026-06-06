@@ -319,8 +319,8 @@ static DBStatus parser_finish_statement(Parser *parser) {
 }
 
 /*
- * CREATE TABLE grammar:
- *   CREATE TABLE identifier (identifier type [, identifier type]*);
+ * CREATE TABLE grammar after CREATE has already been consumed:
+ *   TABLE identifier (identifier type [, identifier type]*);
  */
 static DBStatus parser_parse_create_table(Parser *parser, Statement *out_statement) {
     char table_name[MAX_TABLE_NAME];
@@ -331,12 +331,6 @@ static DBStatus parser_parse_create_table(Parser *parser, Statement *out_stateme
     DBStatus status;
 
     status = ast_statement_init(out_statement, STATEMENT_CREATE_TABLE);
-
-    if (status != DB_OK) {
-        return status;
-    }
-
-    status = parser_expect(parser, TOKEN_CREATE);
 
     if (status != DB_OK) {
         return status;
@@ -423,6 +417,101 @@ static DBStatus parser_parse_create_table(Parser *parser, Statement *out_stateme
     }
 
     return parser_finish_statement(parser);
+}
+
+/*
+ * CREATE INDEX grammar after CREATE has already been consumed:
+ *   INDEX identifier ON identifier (identifier);
+ */
+static DBStatus parser_parse_create_index(Parser *parser, Statement *out_statement) {
+    char index_name[MAX_INDEX_NAME];
+    char table_name[MAX_TABLE_NAME];
+    char column_name[MAX_COLUMN_NAME];
+    DBStatus status;
+
+    status = ast_statement_init(out_statement, STATEMENT_CREATE_INDEX);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_INDEX);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect_identifier(parser, index_name, sizeof(index_name));
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_ON);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect_identifier(parser, table_name, sizeof(table_name));
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_LEFT_PAREN);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect_identifier(parser, column_name, sizeof(column_name));
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_RIGHT_PAREN);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = ast_create_index_init(
+        &out_statement->create_index,
+        index_name,
+        table_name,
+        column_name
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return parser_finish_statement(parser);
+}
+
+/*
+ * CREATE dispatch:
+ *   CREATE TABLE ...
+ *   CREATE INDEX ...
+ */
+static DBStatus parser_parse_create(Parser *parser, Statement *out_statement) {
+    DBStatus status = parser_expect(parser, TOKEN_CREATE);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    if (parser->current.type == TOKEN_TABLE) {
+        return parser_parse_create_table(parser, out_statement);
+    }
+
+    if (parser->current.type == TOKEN_INDEX) {
+        return parser_parse_create_index(parser, out_statement);
+    }
+
+    return DB_PARSE_ERROR;
 }
 
 /*
@@ -881,7 +970,7 @@ DBStatus parser_parse(const char *input, Statement *out_statement) {
          * the rest of its grammar.
          */
         case TOKEN_CREATE:
-            status = parser_parse_create_table(&parser, out_statement);
+            status = parser_parse_create(&parser, out_statement);
             break;
         case TOKEN_INSERT:
             status = parser_parse_insert(&parser, out_statement);

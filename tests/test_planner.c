@@ -19,6 +19,7 @@ static void cleanup_db_dir(const char *path) {
     char catalog_path[MAX_DB_PATH];
     char users_path[MAX_DB_PATH];
     char users_index_path[MAX_DB_PATH];
+    char users_age_index_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
     char indexes_dir[MAX_DB_PATH];
     char wal_path[MAX_DB_PATH];
@@ -26,12 +27,14 @@ static void cleanup_db_dir(const char *path) {
     snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
     snprintf(users_path, sizeof(users_path), "%s/tables/users.tbl", path);
     snprintf(users_index_path, sizeof(users_index_path), "%s/indexes/users_pk.btree", path);
+    snprintf(users_age_index_path, sizeof(users_age_index_path), "%s/indexes/users_age_idx.btree", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
     snprintf(indexes_dir, sizeof(indexes_dir), "%s/indexes", path);
     snprintf(wal_path, sizeof(wal_path), "%s/minidb.wal", path);
 
     remove(users_path);
     remove(users_index_path);
+    remove(users_age_index_path);
     remove(wal_path);
     remove(catalog_path);
     rmdir(tables_dir);
@@ -80,6 +83,33 @@ static void test_planner_create_table_plan(void) {
     assert(plan.create_table.schema.columns[0].type == VALUE_INT);
     assert(strcmp(plan.create_table.schema.columns[1].name, "name") == 0);
     assert(plan.create_table.schema.columns[1].type == VALUE_TEXT);
+
+    plan_free(&plan);
+    binder_bound_statement_free(&bound);
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_planner_create_index_plan(void) {
+    const char *path = "test_planner_create_index";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+    Plan plan;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    bind_sql(&db, "CREATE INDEX users_age_idx ON users (age);", &statement, &bound);
+
+    assert(planner_create_plan(&bound, &plan) == DB_OK);
+
+    assert(plan.type == PLAN_CREATE_INDEX);
+    assert(strcmp(plan.create_index.index.index_name, "users_age_idx") == 0);
+    assert(strcmp(plan.create_index.index.table_name, "users") == 0);
+    assert(strcmp(plan.create_index.index.column_name, "age") == 0);
+    assert(plan.create_index.index.unique == true);
 
     plan_free(&plan);
     binder_bound_statement_free(&bound);
@@ -292,6 +322,7 @@ static void test_planner_rejects_null_inputs(void) {
 
 int main(void) {
     test_planner_create_table_plan();
+    test_planner_create_index_plan();
     test_planner_insert_plan();
     test_planner_select_star_plan();
     test_planner_select_filter_project_plan();

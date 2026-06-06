@@ -91,6 +91,14 @@ static TokenType lexer_keyword_type(const char *text, uint32_t length) {
         return TOKEN_TABLE;
     }
 
+    if (lexer_text_equals_keyword(text, length, "INDEX")) {
+        return TOKEN_INDEX;
+    }
+
+    if (lexer_text_equals_keyword(text, length, "ON")) {
+        return TOKEN_ON;
+    }
+
     if (lexer_text_equals_keyword(text, length, "INSERT")) {
         return TOKEN_INSERT;
     }

@@ -15,6 +15,22 @@
 typedef struct DB DB;
 
 #define MAX_CATALOG_TABLES 64
+#define MAX_CATALOG_INDEXES 64
+
+/*
+ * Explicit secondary index metadata.
+ *
+ * Primary-key indexes are still derived from Schema column flags. CREATE INDEX
+ * entries live here because they need stable names and must survive db_open.
+ * The current B+ tree stores one RID per key, so explicit indexes are unique
+ * integer equality indexes until duplicate-key storage is added.
+ */
+typedef struct {
+    char index_name[MAX_INDEX_NAME];
+    char table_name[MAX_TABLE_NAME];
+    char column_name[MAX_COLUMN_NAME];
+    bool unique;
+} CatalogIndex;
 
 /*
  * The Catalog stores all known table schemas in memory.
@@ -24,6 +40,8 @@ typedef struct DB DB;
 typedef struct {
     uint16_t table_count;
     Schema tables[MAX_CATALOG_TABLES];
+    uint16_t index_count;
+    CatalogIndex indexes[MAX_CATALOG_INDEXES];
 } Catalog;
 
 /*
@@ -48,6 +66,12 @@ DBStatus catalog_save(const DB *db);
 DBStatus catalog_create_table(DB *db, const Schema *schema);
 
 /*
+ * Adds a CREATE INDEX entry to the catalog and persists it.
+ * The executor builds the B+ tree file before this metadata is committed.
+ */
+DBStatus catalog_create_index(DB *db, const CatalogIndex *index);
+
+/*
  * Copies a table schema out of the catalog by table name.
  * Returns DB_OK if the table exists.
  * Returns DB_NOT_FOUND if the table does not exist.
@@ -64,6 +88,15 @@ DBStatus catalog_get_schema(
  * Returns false otherwise.
  */
 bool catalog_table_exists(const DB *db, const char *table_name);
+
+bool catalog_index_exists(const DB *db, const char *index_name);
+
+DBStatus catalog_find_index_for_column(
+    const DB *db,
+    const char *table_name,
+    const char *column_name,
+    CatalogIndex *out_index
+);
 
 /*
  * Prints all table names in the catalog.

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "buffer/buffer_pool.h"
 #include "catalog.h"
 #include "common.h"
 #include "db.h"
@@ -41,6 +42,9 @@ typedef struct {
     BTree *primary_key_index;
     uint16_t primary_key_column;
     bool has_primary_key;
+    BTree secondary_indexes[MAX_CATALOG_INDEXES];
+    uint16_t secondary_index_columns[MAX_CATALOG_INDEXES];
+    uint16_t secondary_index_count;
 } DeleteContext;
 
 /*
@@ -58,6 +62,9 @@ typedef struct {
     BTree *primary_key_index;
     uint16_t primary_key_column;
     bool has_primary_key;
+    BTree secondary_indexes[MAX_CATALOG_INDEXES];
+    uint16_t secondary_index_columns[MAX_CATALOG_INDEXES];
+    uint16_t secondary_index_count;
 } UpdateContext;
 
 typedef struct {
@@ -113,6 +120,119 @@ static DBStatus executor_primary_key_index_path(
 
     if (written < 0 || written >= (int)out_size) {
         return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
+static DBStatus executor_secondary_index_path(
+    const DB *db,
+    const char *index_name,
+    char *out_path,
+    size_t out_size
+) {
+    if (db == NULL || index_name == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    int written = snprintf(
+        out_path,
+        out_size,
+        "%s/indexes/%s.btree",
+        db->path,
+        index_name
+    );
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
+static DBStatus executor_close_secondary_indexes(
+    BTree indexes[MAX_CATALOG_INDEXES],
+    uint16_t index_count
+) {
+    DBStatus status = DB_OK;
+
+    for (uint16_t i = 0; i < index_count; i++) {
+        DBStatus close_status = btree_close(&indexes[i]);
+
+        if (status == DB_OK && close_status != DB_OK) {
+            status = close_status;
+        }
+    }
+
+    return status;
+}
+
+static DBStatus executor_open_secondary_indexes(
+    const DB *db,
+    const Schema *schema,
+    BTree indexes[MAX_CATALOG_INDEXES],
+    uint16_t columns[MAX_CATALOG_INDEXES],
+    uint16_t *out_index_count
+) {
+    if (
+        db == NULL ||
+        schema == NULL ||
+        indexes == NULL ||
+        columns == NULL ||
+        out_index_count == NULL
+    ) {
+        return DB_ERROR;
+    }
+
+    *out_index_count = 0;
+
+    for (uint16_t i = 0; i < db->catalog.index_count; i++) {
+        const CatalogIndex *index = &db->catalog.indexes[i];
+
+        if (strcmp(index->table_name, schema->table_name) != 0) {
+            continue;
+        }
+
+        if (*out_index_count >= MAX_CATALOG_INDEXES) {
+            executor_close_secondary_indexes(indexes, *out_index_count);
+            return DB_FULL;
+        }
+
+        uint16_t column_index = 0;
+        DBStatus status = schema_get_column_index(
+            schema,
+            index->column_name,
+            &column_index
+        );
+
+        if (status != DB_OK) {
+            executor_close_secondary_indexes(indexes, *out_index_count);
+            return status;
+        }
+
+        char index_path[MAX_DB_PATH];
+
+        status = executor_secondary_index_path(
+            db,
+            index->index_name,
+            index_path,
+            sizeof(index_path)
+        );
+
+        if (status != DB_OK) {
+            executor_close_secondary_indexes(indexes, *out_index_count);
+            return status;
+        }
+
+        status = btree_open(&indexes[*out_index_count], index_path);
+
+        if (status != DB_OK) {
+            executor_close_secondary_indexes(indexes, *out_index_count);
+            return status;
+        }
+
+        columns[*out_index_count] = column_index;
+        (*out_index_count)++;
     }
 
     return DB_OK;
@@ -197,6 +317,26 @@ static DBStatus executor_get_primary_key_value(
     return DB_OK;
 }
 
+static DBStatus executor_get_int_column_value(
+    const Row *row,
+    uint16_t column_index,
+    int32_t *out_key
+) {
+    if (row == NULL || out_key == NULL) {
+        return DB_ERROR;
+    }
+
+    const Value *key = row_get_value_const(row, column_index);
+
+    if (key == NULL || key->type != VALUE_INT) {
+        return DB_ERROR;
+    }
+
+    *out_key = key->int_value;
+
+    return DB_OK;
+}
+
 static bool executor_condition_is_primary_key_equality(
     const Schema *schema,
     uint16_t primary_key_column,
@@ -222,6 +362,139 @@ static bool executor_condition_is_primary_key_equality(
     *out_key = condition->value.int_value;
 
     return true;
+}
+
+static bool executor_condition_is_indexable_equality(
+    const WhereCondition *condition,
+    int32_t *out_key
+) {
+    if (condition == NULL || out_key == NULL) {
+        return false;
+    }
+
+    if (
+        condition->operator_type != SQL_OPERATOR_EQUAL ||
+        condition->value.type != VALUE_INT
+    ) {
+        return false;
+    }
+
+    *out_key = condition->value.int_value;
+
+    return true;
+}
+
+static DBStatus executor_check_unique_secondary_indexes(
+    const Row *row,
+    BTree indexes[MAX_CATALOG_INDEXES],
+    const uint16_t columns[MAX_CATALOG_INDEXES],
+    uint16_t index_count
+) {
+    for (uint16_t i = 0; i < index_count; i++) {
+        int32_t key = 0;
+        RID existing_rid;
+
+        DBStatus status = executor_get_int_column_value(row, columns[i], &key);
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        status = btree_search(&indexes[i], key, &existing_rid);
+
+        if (status == DB_OK) {
+            return DB_ERROR;
+        }
+
+        if (status != DB_NOT_FOUND) {
+            return status;
+        }
+    }
+
+    return DB_OK;
+}
+
+static DBStatus executor_insert_secondary_index_entries(
+    const Row *row,
+    RID rid,
+    BTree indexes[MAX_CATALOG_INDEXES],
+    const uint16_t columns[MAX_CATALOG_INDEXES],
+    uint16_t index_count
+) {
+    for (uint16_t i = 0; i < index_count; i++) {
+        int32_t key = 0;
+
+        DBStatus status = executor_get_int_column_value(row, columns[i], &key);
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        status = btree_insert(&indexes[i], key, rid);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    return DB_OK;
+}
+
+static DBStatus executor_delete_secondary_index_entries(
+    const Row *row,
+    BTree indexes[MAX_CATALOG_INDEXES],
+    const uint16_t columns[MAX_CATALOG_INDEXES],
+    uint16_t index_count
+) {
+    for (uint16_t i = 0; i < index_count; i++) {
+        int32_t key = 0;
+
+        DBStatus status = executor_get_int_column_value(row, columns[i], &key);
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        status = btree_delete(&indexes[i], key);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    return DB_OK;
+}
+
+static bool executor_find_open_secondary_index_for_column(
+    const Schema *schema,
+    const char *column_name,
+    const uint16_t columns[MAX_CATALOG_INDEXES],
+    uint16_t index_count,
+    uint16_t *out_index_position
+) {
+    uint16_t condition_column = 0;
+
+    if (
+        schema == NULL ||
+        column_name == NULL ||
+        columns == NULL ||
+        out_index_position == NULL
+    ) {
+        return false;
+    }
+
+    if (schema_get_column_index(schema, column_name, &condition_column) != DB_OK) {
+        return false;
+    }
+
+    for (uint16_t i = 0; i < index_count; i++) {
+        if (columns[i] == condition_column) {
+            *out_index_position = i;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /*
@@ -419,6 +692,17 @@ static DBStatus executor_delete_callback(const Row *row, RID rid, void *context)
         }
     }
 
+    DBStatus status = executor_delete_secondary_index_entries(
+        row,
+        delete_context->secondary_indexes,
+        delete_context->secondary_index_columns,
+        delete_context->secondary_index_count
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
     /*
      * Use the logged record path here because the scan callback has both the
      * matching RID and the active statement transaction.
@@ -530,6 +814,9 @@ static DBStatus executor_update_callback(const Row *row, RID rid, void *context)
         int32_t old_primary_key = 0;
         int32_t new_primary_key = 0;
         bool primary_key_changed = false;
+        int32_t old_secondary_keys[MAX_CATALOG_INDEXES];
+        int32_t new_secondary_keys[MAX_CATALOG_INDEXES];
+        bool secondary_index_changed[MAX_CATALOG_INDEXES];
 
         if (update_context->has_primary_key) {
             status = executor_get_primary_key_value(
@@ -557,6 +844,54 @@ static DBStatus executor_update_callback(const Row *row, RID rid, void *context)
                 btree_search(update_context->primary_key_index, new_primary_key, &existing_rid) == DB_OK
             ) {
                 status = DB_ERROR;
+            }
+        }
+
+        /*
+         * Secondary indexes currently have unique integer keys. If an UPDATE
+         * changes one of those keys, check the B+ tree before rewriting the
+         * table row so duplicates do not leave orphaned row versions behind.
+         */
+        for (
+            uint16_t i = 0;
+            status == DB_OK && i < update_context->secondary_index_count;
+            i++
+        ) {
+            status = executor_get_int_column_value(
+                row,
+                update_context->secondary_index_columns[i],
+                &old_secondary_keys[i]
+            );
+
+            if (status != DB_OK) {
+                break;
+            }
+
+            status = executor_get_int_column_value(
+                &updated_row,
+                update_context->secondary_index_columns[i],
+                &new_secondary_keys[i]
+            );
+
+            if (status != DB_OK) {
+                break;
+            }
+
+            secondary_index_changed[i] = old_secondary_keys[i] != new_secondary_keys[i];
+
+            if (secondary_index_changed[i]) {
+                RID existing_rid;
+                DBStatus search_status = btree_search(
+                    &update_context->secondary_indexes[i],
+                    new_secondary_keys[i],
+                    &existing_rid
+                );
+
+                if (search_status == DB_OK) {
+                    status = DB_ERROR;
+                } else if (search_status != DB_NOT_FOUND) {
+                    status = search_status;
+                }
             }
         }
 
@@ -594,6 +929,37 @@ static DBStatus executor_update_callback(const Row *row, RID rid, void *context)
                 );
             }
         }
+
+        if (status == DB_OK) {
+            for (uint16_t i = 0; i < update_context->secondary_index_count; i++) {
+                if (!secondary_index_changed[i] && rid_equal(&rid, &updated_rid)) {
+                    continue;
+                }
+
+                /*
+                 * A row may move even when the indexed value is unchanged.
+                 * Replacing the entry keeps key -> RID pointers current.
+                 */
+                status = btree_delete(
+                    &update_context->secondary_indexes[i],
+                    old_secondary_keys[i]
+                );
+
+                if (status != DB_OK) {
+                    break;
+                }
+
+                status = btree_insert(
+                    &update_context->secondary_indexes[i],
+                    new_secondary_keys[i],
+                    updated_rid
+                );
+
+                if (status != DB_OK) {
+                    break;
+                }
+            }
+        }
     }
 
     row_free(&updated_row);
@@ -608,14 +974,143 @@ static DBStatus executor_execute_create_table(DB *db, const CreateTablePlan *pla
     return catalog_create_table(db, &plan->schema);
 }
 
+typedef struct {
+    BTree *tree;
+    uint16_t column_index;
+} CreateIndexBuildContext;
+
+static DBStatus executor_create_index_build_callback(
+    const Row *row,
+    RID rid,
+    void *context
+) {
+    CreateIndexBuildContext *build = context;
+    int32_t key = 0;
+
+    if (row == NULL || build == NULL) {
+        return DB_ERROR;
+    }
+
+    DBStatus status = executor_get_int_column_value(row, build->column_index, &key);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * btree_insert rejects duplicate keys. That makes CREATE INDEX fail on
+     * existing duplicate values instead of silently creating an incomplete
+     * access path.
+     */
+    return btree_insert(build->tree, key, rid);
+}
+
+static DBStatus executor_execute_create_index(DB *db, const CreateIndexPlan *plan) {
+    Table table;
+    uint16_t column_index = 0;
+    char index_path[MAX_DB_PATH];
+    BTree tree;
+
+    index_path[0] = '\0';
+    memset(&tree, 0, sizeof(BTree));
+
+    DBStatus status = table_open(&table, db, plan->index.table_name);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = schema_get_column_index(
+        &table.schema,
+        plan->index.column_name,
+        &column_index
+    );
+
+    if (status == DB_OK) {
+        status = executor_secondary_index_path(
+            db,
+            plan->index.index_name,
+            index_path,
+            sizeof(index_path)
+        );
+    }
+
+    if (status == DB_OK) {
+        status = buffer_pool_discard_file(index_path);
+    }
+
+    if (status == DB_OK) {
+        FILE *file = fopen(index_path, "wb");
+
+        if (file == NULL) {
+            status = DB_IO_ERROR;
+        } else if (fclose(file) != 0) {
+            status = DB_IO_ERROR;
+        }
+    }
+
+    if (status == DB_OK) {
+        status = btree_open(&tree, index_path);
+    }
+
+    if (status == DB_OK) {
+        CreateIndexBuildContext context;
+
+        context.tree = &tree;
+        context.column_index = column_index;
+
+        status = table_scan(&table, executor_create_index_build_callback, &context);
+    }
+
+    DBStatus index_close_status = DB_OK;
+
+    if (tree.is_open) {
+        index_close_status = btree_close(&tree);
+    }
+
+    if (status != DB_OK && index_path[0] != '\0') {
+        /*
+         * A failed build should not leave a stray B+ tree behind with no
+         * catalog entry. That can happen when existing rows contain duplicate
+         * values for this unique secondary index.
+         */
+        buffer_pool_discard_file(index_path);
+        remove(index_path);
+    }
+
+    /*
+     * Commit catalog metadata only after the index file was fully built.
+     * Otherwise the next db_open would believe a failed access path exists.
+     */
+    if (status == DB_OK && index_close_status == DB_OK) {
+        status = catalog_create_index(db, &plan->index);
+    }
+
+    DBStatus close_status = table_close(&table);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    if (index_close_status != DB_OK) {
+        return index_close_status;
+    }
+
+    return close_status;
+}
+
 static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
     Table table;
     BTree primary_key_index;
+    BTree secondary_indexes[MAX_CATALOG_INDEXES];
+    uint16_t secondary_index_columns[MAX_CATALOG_INDEXES];
+    uint16_t secondary_index_count = 0;
     bool has_primary_key = false;
     uint16_t primary_key_column = 0;
     RID rid;
 
     memset(&primary_key_index, 0, sizeof(BTree));
+    memset(secondary_indexes, 0, sizeof(secondary_indexes));
 
     DBStatus status = table_open(&table, db, plan->table_name);
 
@@ -639,6 +1134,16 @@ static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
         );
     }
 
+    if (status == DB_OK) {
+        status = executor_open_secondary_indexes(
+            db,
+            &table.schema,
+            secondary_indexes,
+            secondary_index_columns,
+            &secondary_index_count
+        );
+    }
+
     if (status == DB_OK && has_primary_key) {
         int32_t key = 0;
         RID existing_rid;
@@ -655,6 +1160,15 @@ static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
         ) {
             status = DB_ERROR;
         }
+    }
+
+    if (status == DB_OK) {
+        status = executor_check_unique_secondary_indexes(
+            &plan->row,
+            secondary_indexes,
+            secondary_index_columns,
+            secondary_index_count
+        );
     }
 
     if (status == DB_OK) {
@@ -684,11 +1198,26 @@ static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
         }
     }
 
+    if (status == DB_OK) {
+        status = executor_insert_secondary_index_entries(
+            &plan->row,
+            rid,
+            secondary_indexes,
+            secondary_index_columns,
+            secondary_index_count
+        );
+    }
+
     DBStatus index_close_status = DB_OK;
 
     if (has_primary_key) {
         index_close_status = btree_close(&primary_key_index);
     }
+
+    DBStatus secondary_close_status = executor_close_secondary_indexes(
+        secondary_indexes,
+        secondary_index_count
+    );
 
     DBStatus close_status = table_close(&table);
 
@@ -698,6 +1227,10 @@ static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
 
     if (index_close_status != DB_OK) {
         return index_close_status;
+    }
+
+    if (secondary_close_status != DB_OK) {
+        return secondary_close_status;
     }
 
     return close_status;
@@ -790,6 +1323,96 @@ static DBStatus executor_execute_select(
         }
     }
 
+    if (plan->has_filter) {
+        int32_t key = 0;
+
+        if (
+            executor_condition_is_indexable_equality(&plan->filter.condition, &key)
+        ) {
+            CatalogIndex index;
+            DBStatus index_status = catalog_find_index_for_column(
+                db,
+                table.schema.table_name,
+                plan->filter.condition.column_name,
+                &index
+            );
+
+            if (index_status == DB_OK) {
+                char index_path[MAX_DB_PATH];
+                BTree secondary_index;
+
+                memset(&secondary_index, 0, sizeof(BTree));
+
+                status = executor_secondary_index_path(
+                    db,
+                    index.index_name,
+                    index_path,
+                    sizeof(index_path)
+                );
+
+                if (status == DB_OK) {
+                    status = btree_open(&secondary_index, index_path);
+                }
+
+                if (status == DB_OK) {
+                    RID rid;
+
+                    status = btree_search(&secondary_index, key, &rid);
+
+                    if (status == DB_NOT_FOUND) {
+                        status = DB_OK;
+                    } else if (status == DB_OK) {
+                        Row row;
+
+                        status = record_get(table.file_path, rid, &row);
+
+                        if (status == DB_OK) {
+                            status = executor_select_callback(&row, rid, &context);
+                            row_free(&row);
+                        }
+                    }
+                }
+
+                DBStatus secondary_close_status = DB_OK;
+
+                if (secondary_index.is_open) {
+                    secondary_close_status = btree_close(&secondary_index);
+                }
+
+                DBStatus primary_close_status = DB_OK;
+
+                if (has_primary_key) {
+                    primary_close_status = btree_close(&primary_key_index);
+                }
+
+                DBStatus close_status = table_close(&table);
+
+                if (status != DB_OK) {
+                    return status;
+                }
+
+                if (secondary_close_status != DB_OK) {
+                    return secondary_close_status;
+                }
+
+                if (primary_close_status != DB_OK) {
+                    return primary_close_status;
+                }
+
+                return close_status;
+            }
+
+            if (index_status != DB_NOT_FOUND) {
+                if (has_primary_key) {
+                    btree_close(&primary_key_index);
+                }
+
+                table_close(&table);
+                return index_status;
+            }
+        }
+    }
+
     /*
      * table_scan owns temporary rows and calls executor_select_callback for
      * each active row.
@@ -836,6 +1459,9 @@ static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
     context.primary_key_index = &primary_key_index;
     context.primary_key_column = primary_key_column;
     context.has_primary_key = false;
+    memset(context.secondary_indexes, 0, sizeof(context.secondary_indexes));
+    memset(context.secondary_index_columns, 0, sizeof(context.secondary_index_columns));
+    context.secondary_index_count = 0;
 
     status = executor_open_primary_key_index(
         db,
@@ -853,6 +1479,118 @@ static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
     context.primary_key_column = primary_key_column;
     context.has_primary_key = has_primary_key;
 
+    status = executor_open_secondary_indexes(
+        db,
+        &table.schema,
+        context.secondary_indexes,
+        context.secondary_index_columns,
+        &context.secondary_index_count
+    );
+
+    if (status != DB_OK) {
+        if (has_primary_key) {
+            btree_close(&primary_key_index);
+        }
+
+        table_close(&table);
+        return status;
+    }
+
+    if (plan->has_condition) {
+        int32_t key = 0;
+        bool used_index = false;
+
+        if (
+            has_primary_key &&
+            executor_condition_is_primary_key_equality(
+                &table.schema,
+                primary_key_column,
+                &plan->condition,
+                &key
+            )
+        ) {
+            RID rid;
+
+            status = btree_search(&primary_key_index, key, &rid);
+            used_index = true;
+
+            if (status == DB_NOT_FOUND) {
+                status = DB_OK;
+            } else if (status == DB_OK) {
+                Row row;
+
+                status = record_get(table.file_path, rid, &row);
+
+                if (status == DB_OK) {
+                    status = executor_delete_callback(&row, rid, &context);
+                    row_free(&row);
+                }
+            }
+        } else if (executor_condition_is_indexable_equality(&plan->condition, &key)) {
+            uint16_t secondary_index_position = 0;
+
+            if (
+                executor_find_open_secondary_index_for_column(
+                    &table.schema,
+                    plan->condition.column_name,
+                    context.secondary_index_columns,
+                    context.secondary_index_count,
+                    &secondary_index_position
+                )
+            ) {
+                RID rid;
+
+                status = btree_search(
+                    &context.secondary_indexes[secondary_index_position],
+                    key,
+                    &rid
+                );
+                used_index = true;
+
+                if (status == DB_NOT_FOUND) {
+                    status = DB_OK;
+                } else if (status == DB_OK) {
+                    Row row;
+
+                    status = record_get(table.file_path, rid, &row);
+
+                    if (status == DB_OK) {
+                        status = executor_delete_callback(&row, rid, &context);
+                        row_free(&row);
+                    }
+                }
+            }
+        }
+
+        if (used_index) {
+            DBStatus index_close_status = DB_OK;
+
+            if (has_primary_key) {
+                index_close_status = btree_close(&primary_key_index);
+            }
+
+            DBStatus secondary_close_status = executor_close_secondary_indexes(
+                context.secondary_indexes,
+                context.secondary_index_count
+            );
+            DBStatus close_status = table_close(&table);
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            if (index_close_status != DB_OK) {
+                return index_close_status;
+            }
+
+            if (secondary_close_status != DB_OK) {
+                return secondary_close_status;
+            }
+
+            return close_status;
+        }
+    }
+
     /*
      * DELETE is implemented as table scan plus conditional record_delete.
      */
@@ -864,6 +1602,11 @@ static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
         index_close_status = btree_close(&primary_key_index);
     }
 
+    DBStatus secondary_close_status = executor_close_secondary_indexes(
+        context.secondary_indexes,
+        context.secondary_index_count
+    );
+
     DBStatus close_status = table_close(&table);
 
     if (status != DB_OK) {
@@ -872,6 +1615,10 @@ static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
 
     if (index_close_status != DB_OK) {
         return index_close_status;
+    }
+
+    if (secondary_close_status != DB_OK) {
+        return secondary_close_status;
     }
 
     return close_status;
@@ -898,6 +1645,9 @@ static DBStatus executor_execute_update(DB *db, const UpdatePlan *plan) {
     context.primary_key_index = &primary_key_index;
     context.primary_key_column = primary_key_column;
     context.has_primary_key = false;
+    memset(context.secondary_indexes, 0, sizeof(context.secondary_indexes));
+    memset(context.secondary_index_columns, 0, sizeof(context.secondary_index_columns));
+    context.secondary_index_count = 0;
 
     status = executor_open_primary_key_index(
         db,
@@ -915,6 +1665,118 @@ static DBStatus executor_execute_update(DB *db, const UpdatePlan *plan) {
     context.primary_key_column = primary_key_column;
     context.has_primary_key = has_primary_key;
 
+    status = executor_open_secondary_indexes(
+        db,
+        &table.schema,
+        context.secondary_indexes,
+        context.secondary_index_columns,
+        &context.secondary_index_count
+    );
+
+    if (status != DB_OK) {
+        if (has_primary_key) {
+            btree_close(&primary_key_index);
+        }
+
+        table_close(&table);
+        return status;
+    }
+
+    if (plan->has_condition) {
+        int32_t key = 0;
+        bool used_index = false;
+
+        if (
+            has_primary_key &&
+            executor_condition_is_primary_key_equality(
+                &table.schema,
+                primary_key_column,
+                &plan->condition,
+                &key
+            )
+        ) {
+            RID rid;
+
+            status = btree_search(&primary_key_index, key, &rid);
+            used_index = true;
+
+            if (status == DB_NOT_FOUND) {
+                status = DB_OK;
+            } else if (status == DB_OK) {
+                Row row;
+
+                status = record_get(table.file_path, rid, &row);
+
+                if (status == DB_OK) {
+                    status = executor_update_callback(&row, rid, &context);
+                    row_free(&row);
+                }
+            }
+        } else if (executor_condition_is_indexable_equality(&plan->condition, &key)) {
+            uint16_t secondary_index_position = 0;
+
+            if (
+                executor_find_open_secondary_index_for_column(
+                    &table.schema,
+                    plan->condition.column_name,
+                    context.secondary_index_columns,
+                    context.secondary_index_count,
+                    &secondary_index_position
+                )
+            ) {
+                RID rid;
+
+                status = btree_search(
+                    &context.secondary_indexes[secondary_index_position],
+                    key,
+                    &rid
+                );
+                used_index = true;
+
+                if (status == DB_NOT_FOUND) {
+                    status = DB_OK;
+                } else if (status == DB_OK) {
+                    Row row;
+
+                    status = record_get(table.file_path, rid, &row);
+
+                    if (status == DB_OK) {
+                        status = executor_update_callback(&row, rid, &context);
+                        row_free(&row);
+                    }
+                }
+            }
+        }
+
+        if (used_index) {
+            DBStatus index_close_status = DB_OK;
+
+            if (has_primary_key) {
+                index_close_status = btree_close(&primary_key_index);
+            }
+
+            DBStatus secondary_close_status = executor_close_secondary_indexes(
+                context.secondary_indexes,
+                context.secondary_index_count
+            );
+            DBStatus close_status = table_close(&table);
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            if (index_close_status != DB_OK) {
+                return index_close_status;
+            }
+
+            if (secondary_close_status != DB_OK) {
+                return secondary_close_status;
+            }
+
+            return close_status;
+        }
+    }
+
     /*
      * UPDATE is implemented as table scan plus conditional record_update.
      */
@@ -926,6 +1788,11 @@ static DBStatus executor_execute_update(DB *db, const UpdatePlan *plan) {
         index_close_status = btree_close(&primary_key_index);
     }
 
+    DBStatus secondary_close_status = executor_close_secondary_indexes(
+        context.secondary_indexes,
+        context.secondary_index_count
+    );
+
     DBStatus close_status = table_close(&table);
 
     if (status != DB_OK) {
@@ -934,6 +1801,10 @@ static DBStatus executor_execute_update(DB *db, const UpdatePlan *plan) {
 
     if (index_close_status != DB_OK) {
         return index_close_status;
+    }
+
+    if (secondary_close_status != DB_OK) {
+        return secondary_close_status;
     }
 
     return close_status;
@@ -999,6 +1870,8 @@ static DBStatus executor_execute_plan(DB *db, const Plan *plan, FILE *out) {
     switch (plan->type) {
         case PLAN_CREATE_TABLE:
             return executor_execute_create_table(db, &plan->create_table);
+        case PLAN_CREATE_INDEX:
+            return executor_execute_create_index(db, &plan->create_index);
         case PLAN_INSERT:
             return executor_execute_insert(db, &plan->insert);
         case PLAN_SELECT:

@@ -1,9 +1,11 @@
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "catalog.h"
 #include "common.h"
+#include "db.h"
 #include "schema.h"
 #include "sql/ast.h"
 #include "sql/binder.h"
@@ -58,6 +60,13 @@ static DBStatus binder_copy_statement(
             }
 
             return DB_OK;
+        case STATEMENT_CREATE_INDEX:
+            return ast_create_index_init(
+                &dest->create_index,
+                source->create_index.index_name,
+                source->create_index.table_name,
+                source->create_index.column_name
+            );
         case STATEMENT_INSERT:
             /*
              * INSERT values may contain TEXT, so ast_insert_add_value performs
@@ -167,6 +176,42 @@ static DBStatus binder_copy_statement(
     }
 }
 
+static bool binder_name_matches_implicit_primary_key_index(
+    const DB *db,
+    const char *index_name
+) {
+    if (db == NULL || index_name == NULL) {
+        return false;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.table_count; i++) {
+        const Schema *schema = &db->catalog.tables[i];
+        uint16_t primary_key_column = 0;
+
+        if (schema_get_primary_key_index(schema, &primary_key_column) != DB_OK) {
+            continue;
+        }
+
+        char implicit_name[MAX_INDEX_NAME];
+        int written = snprintf(
+            implicit_name,
+            sizeof(implicit_name),
+            "%s_pk",
+            schema->table_name
+        );
+
+        if (written < 0 || written >= (int)sizeof(implicit_name)) {
+            continue;
+        }
+
+        if (strcmp(implicit_name, index_name) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static DBStatus binder_build_create_schema(
     const CreateTableStatement *statement,
     Schema *out_schema
@@ -268,6 +313,72 @@ static DBStatus binder_bind_create_table(
 
     if (status != DB_OK) {
         return status;
+    }
+
+    out_bound->has_table_schema = true;
+
+    return DB_OK;
+}
+
+static DBStatus binder_bind_create_index(
+    const DB *db,
+    const Statement *statement,
+    BoundStatement *out_bound
+) {
+    ValueType column_type;
+
+    if (
+        catalog_index_exists(db, statement->create_index.index_name) ||
+        binder_name_matches_implicit_primary_key_index(
+            db,
+            statement->create_index.index_name
+        )
+    ) {
+        return DB_ERROR;
+    }
+
+    CatalogIndex existing_index;
+    DBStatus existing_index_status = catalog_find_index_for_column(
+        db,
+        statement->create_index.table_name,
+        statement->create_index.column_name,
+        &existing_index
+    );
+
+    if (existing_index_status == DB_OK) {
+        return DB_ERROR;
+    }
+
+    if (existing_index_status != DB_NOT_FOUND) {
+        return existing_index_status;
+    }
+
+    DBStatus status = catalog_get_schema(
+        db,
+        statement->create_index.table_name,
+        &out_bound->table_schema
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = schema_get_column_type(
+        &out_bound->table_schema,
+        statement->create_index.column_name,
+        &column_type
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * The current B+ tree key is int32_t, so CREATE INDEX is limited to INT
+     * columns until a typed/composite index key format exists.
+     */
+    if (column_type != VALUE_INT) {
+        return DB_TYPE_ERROR;
     }
 
     out_bound->has_table_schema = true;
@@ -491,6 +602,9 @@ DBStatus binder_bind(
          */
         case STATEMENT_CREATE_TABLE:
             status = binder_bind_create_table(db, statement, out_bound);
+            break;
+        case STATEMENT_CREATE_INDEX:
+            status = binder_bind_create_index(db, statement, out_bound);
             break;
         case STATEMENT_INSERT:
             status = binder_bind_insert(db, statement, out_bound);

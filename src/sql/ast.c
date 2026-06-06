@@ -174,6 +174,47 @@ DBStatus ast_create_table_add_column_with_constraints(
     return DB_OK;
 }
 
+DBStatus ast_create_index_init(
+    CreateIndexStatement *statement,
+    const char *index_name,
+    const char *table_name,
+    const char *column_name
+) {
+    DBStatus status;
+
+    if (statement == NULL) {
+        return DB_ERROR;
+    }
+
+    memset(statement, 0, sizeof(CreateIndexStatement));
+
+    status = ast_copy_name(
+        statement->index_name,
+        sizeof(statement->index_name),
+        index_name
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = ast_copy_name(
+        statement->table_name,
+        sizeof(statement->table_name),
+        table_name
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return ast_copy_name(
+        statement->column_name,
+        sizeof(statement->column_name),
+        column_name
+    );
+}
+
 DBStatus ast_insert_init(InsertStatement *statement, const char *table_name) {
     if (statement == NULL) {
         return DB_ERROR;

@@ -20,6 +20,9 @@
  *
  * MAX_COLUMNS:
  *   Maximum number of columns allowed in a table.
+ *
+ * MAX_INDEX_NAME:
+ *   Maximum length for an index name, not including the null terminator.
  */
 #define PAGE_SIZE 4096
 /*
@@ -27,6 +30,7 @@
  */
 #define MAX_TABLE_NAME 64
 #define MAX_COLUMN_NAME 64
+#define MAX_INDEX_NAME 64
 #define MAX_COLUMNS 32
 
 /*
