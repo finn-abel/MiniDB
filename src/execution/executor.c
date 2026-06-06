@@ -831,6 +831,45 @@ static DBStatus executor_execute_create_index(DB *db, const CreateIndexPlan *pla
     return close_status;
 }
 
+static DBStatus executor_execute_drop_index(DB *db, const DropIndexPlan *plan) {
+    char index_path[MAX_DB_PATH];
+
+    DBStatus status = executor_secondary_index_path(
+        db,
+        plan->index_name,
+        index_path,
+        sizeof(index_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * Remove metadata first. If catalog persistence fails, leave the index
+     * file in place so the in-memory/durable catalog and files still agree.
+     */
+    status = catalog_drop_index(db, plan->index_name);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = buffer_pool_discard_file(index_path);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * The catalog is authoritative. If the file was already gone, DROP INDEX
+     * should still be considered complete once metadata is removed.
+     */
+    remove(index_path);
+
+    return DB_OK;
+}
+
 static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
     Table table;
     BTree primary_key_index;
@@ -1548,6 +1587,8 @@ static DBStatus executor_execute_plan(DB *db, const Plan *plan, FILE *out) {
             return executor_execute_create_table(db, &plan->create_table);
         case PLAN_CREATE_INDEX:
             return executor_execute_create_index(db, &plan->create_index);
+        case PLAN_DROP_INDEX:
+            return executor_execute_drop_index(db, &plan->drop_index);
         case PLAN_INSERT:
             return executor_execute_insert(db, &plan->insert);
         case PLAN_SELECT:

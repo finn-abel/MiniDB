@@ -241,6 +241,23 @@ DBStatus ast_create_index_add_column(
     return DB_OK;
 }
 
+DBStatus ast_drop_index_init(
+    DropIndexStatement *statement,
+    const char *index_name
+) {
+    if (statement == NULL) {
+        return DB_ERROR;
+    }
+
+    memset(statement, 0, sizeof(DropIndexStatement));
+
+    return ast_copy_name(
+        statement->index_name,
+        sizeof(statement->index_name),
+        index_name
+    );
+}
+
 DBStatus ast_insert_init(InsertStatement *statement, const char *table_name) {
     if (statement == NULL) {
         return DB_ERROR;

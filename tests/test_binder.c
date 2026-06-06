@@ -56,6 +56,27 @@ static void add_users_table(DB *db) {
     assert(catalog_create_table(db, &schema) == DB_OK);
 }
 
+static void add_users_age_index(DB *db, const char *path) {
+    CatalogIndex index;
+    char index_path[MAX_DB_PATH];
+    FILE *file;
+
+    snprintf(index_path, sizeof(index_path), "%s/indexes/users_age_idx.sidx", path);
+
+    file = fopen(index_path, "wb");
+    assert(file != NULL);
+    assert(fclose(file) == 0);
+
+    memset(&index, 0, sizeof(index));
+    strcpy(index.index_name, "users_age_idx");
+    strcpy(index.table_name, "users");
+    index.column_count = 1;
+    strcpy(index.column_names[0], "age");
+    index.unique = false;
+
+    assert(catalog_create_index(db, &index) == DB_OK);
+}
+
 static void parse_statement(const char *sql, Statement *statement) {
     assert(parser_parse(sql, statement) == DB_OK);
 }
@@ -161,6 +182,47 @@ static void test_binder_bind_create_index_on_text_column(void) {
     assert(binder_bind(&db, &statement, &bound) == DB_OK);
 
     binder_bound_statement_free(&bound);
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_binder_bind_drop_index(void) {
+    const char *path = "test_binder_drop_index";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    add_users_age_index(&db, path);
+    parse_statement("DROP INDEX users_age_idx;", &statement);
+
+    assert(binder_bind(&db, &statement, &bound) == DB_OK);
+
+    assert(bound.statement.type == STATEMENT_DROP_INDEX);
+    assert(strcmp(bound.statement.drop_index.index_name, "users_age_idx") == 0);
+
+    binder_bound_statement_free(&bound);
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_binder_rejects_drop_missing_index(void) {
+    const char *path = "test_binder_drop_missing_index";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    parse_statement("DROP INDEX missing_idx;", &statement);
+
+    assert(binder_bind(&db, &statement, &bound) == DB_NOT_FOUND);
+
     ast_statement_free(&statement);
     assert(db_close(&db) == DB_OK);
     cleanup_db_dir(path);
@@ -528,6 +590,8 @@ int main(void) {
     test_binder_rejects_create_duplicate_columns();
     test_binder_bind_create_index();
     test_binder_bind_create_index_on_text_column();
+    test_binder_bind_drop_index();
+    test_binder_rejects_drop_missing_index();
     test_binder_bind_insert();
     test_binder_rejects_insert_missing_table();
     test_binder_rejects_insert_wrong_value_count();

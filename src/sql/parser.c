@@ -532,6 +532,45 @@ static DBStatus parser_parse_create(Parser *parser, Statement *out_statement) {
 }
 
 /*
+ * DROP INDEX grammar:
+ *   DROP INDEX identifier;
+ */
+static DBStatus parser_parse_drop_index(Parser *parser, Statement *out_statement) {
+    char index_name[MAX_INDEX_NAME];
+    DBStatus status = ast_statement_init(out_statement, STATEMENT_DROP_INDEX);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_DROP);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_INDEX);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect_identifier(parser, index_name, sizeof(index_name));
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = ast_drop_index_init(&out_statement->drop_index, index_name);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return parser_finish_statement(parser);
+}
+
+/*
  * INSERT grammar:
  *   INSERT INTO identifier VALUES (literal [, literal]*);
  */
@@ -988,6 +1027,9 @@ DBStatus parser_parse(const char *input, Statement *out_statement) {
          */
         case TOKEN_CREATE:
             status = parser_parse_create(&parser, out_statement);
+            break;
+        case TOKEN_DROP:
+            status = parser_parse_drop_index(&parser, out_statement);
             break;
         case TOKEN_INSERT:
             status = parser_parse_insert(&parser, out_statement);

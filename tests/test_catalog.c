@@ -15,6 +15,7 @@ static void cleanup_db_dir(const char *path) {
     char users_path[MAX_DB_PATH];
     char posts_path[MAX_DB_PATH];
     char users_index_path[MAX_DB_PATH];
+    char users_name_index_path[MAX_DB_PATH];
     char posts_index_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
     char indexes_dir[MAX_DB_PATH];
@@ -24,6 +25,7 @@ static void cleanup_db_dir(const char *path) {
     snprintf(users_path, sizeof(users_path), "%s/tables/users.tbl", path);
     snprintf(posts_path, sizeof(posts_path), "%s/tables/posts.tbl", path);
     snprintf(users_index_path, sizeof(users_index_path), "%s/indexes/users_pk.btree", path);
+    snprintf(users_name_index_path, sizeof(users_name_index_path), "%s/indexes/users_name_idx.sidx", path);
     snprintf(posts_index_path, sizeof(posts_index_path), "%s/indexes/posts_pk.btree", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
     snprintf(indexes_dir, sizeof(indexes_dir), "%s/indexes", path);
@@ -32,6 +34,7 @@ static void cleanup_db_dir(const char *path) {
     remove(users_path);
     remove(posts_path);
     remove(users_index_path);
+    remove(users_name_index_path);
     remove(posts_index_path);
     remove(wal_path);
     remove(catalog_path);
@@ -67,6 +70,13 @@ static void write_catalog_file(const char *path, const char *contents) {
     file = fopen(catalog_path, "w");
     assert(file != NULL);
     assert(fputs(contents, file) >= 0);
+    assert(fclose(file) == 0);
+}
+
+static void create_empty_file(const char *path) {
+    FILE *file = fopen(path, "wb");
+
+    assert(file != NULL);
     assert(fclose(file) == 0);
 }
 
@@ -290,6 +300,48 @@ static void test_catalog_save_and_load(void) {
     cleanup_db_dir(path);
 }
 
+static void test_catalog_create_and_drop_index(void) {
+    const char *path = "test_catalog_drop_index";
+
+    DB db;
+    DB reopened;
+    Schema schema;
+    CatalogIndex index;
+    char index_path[MAX_DB_PATH];
+
+    setup_db(&db, path);
+    setup_users_schema(&schema);
+    assert(catalog_create_table(&db, &schema) == DB_OK);
+
+    snprintf(index_path, sizeof(index_path), "%s/indexes/users_name_idx.sidx", path);
+    create_empty_file(index_path);
+
+    memset(&index, 0, sizeof(index));
+    strcpy(index.index_name, "users_name_idx");
+    strcpy(index.table_name, "users");
+    index.column_count = 1;
+    strcpy(index.column_names[0], "name");
+    index.unique = false;
+
+    assert(catalog_create_index(&db, &index) == DB_OK);
+    assert(db.catalog.index_count == 1);
+    assert(catalog_index_exists(&db, "users_name_idx") == true);
+
+    assert(catalog_drop_index(&db, "users_name_idx") == DB_OK);
+    assert(db.catalog.index_count == 0);
+    assert(catalog_index_exists(&db, "users_name_idx") == false);
+    assert(catalog_drop_index(&db, "users_name_idx") == DB_NOT_FOUND);
+
+    assert(db_close(&db) == DB_OK);
+
+    assert(db_open(&reopened, path) == DB_OK);
+    assert(reopened.catalog.index_count == 0);
+    assert(catalog_index_exists(&reopened, "users_name_idx") == false);
+    assert(db_close(&reopened) == DB_OK);
+
+    cleanup_db_dir(path);
+}
+
 static void test_catalog_load_rejects_bad_type(void) {
     const char *path = "test_catalog_bad_type";
 
@@ -351,6 +403,7 @@ int main(void) {
     test_catalog_table_exists();
     test_catalog_list_tables();
     test_catalog_save_and_load();
+    test_catalog_create_and_drop_index();
     test_catalog_load_old_format_without_constraints();
     test_catalog_load_rejects_bad_type();
     test_catalog_load_rejects_missing_end();

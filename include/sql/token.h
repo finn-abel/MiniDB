@@ -19,6 +19,7 @@
 typedef enum {
     TOKEN_EOF = 0,
     TOKEN_CREATE,
+    TOKEN_DROP,
     TOKEN_TABLE,
     TOKEN_INDEX,
     TOKEN_ON,

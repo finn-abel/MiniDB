@@ -665,6 +665,47 @@ DBStatus catalog_create_index(DB *db, const CatalogIndex *index) {
     return DB_OK;
 }
 
+DBStatus catalog_drop_index(DB *db, const char *index_name) {
+    if (db == NULL || index_name == NULL) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.index_count; i++) {
+        if (strcmp(db->catalog.indexes[i].index_name, index_name) != 0) {
+            continue;
+        }
+
+        CatalogIndex removed = db->catalog.indexes[i];
+
+        for (uint16_t j = i + 1; j < db->catalog.index_count; j++) {
+            db->catalog.indexes[j - 1] = db->catalog.indexes[j];
+        }
+
+        db->catalog.index_count--;
+        memset(&db->catalog.indexes[db->catalog.index_count], 0, sizeof(CatalogIndex));
+
+        DBStatus status = catalog_save(db);
+
+        if (status != DB_OK) {
+            /*
+             * Put the in-memory catalog back if persistence failed. The index
+             * file itself is removed by the executor only after this succeeds.
+             */
+            for (uint16_t j = db->catalog.index_count; j > i; j--) {
+                db->catalog.indexes[j] = db->catalog.indexes[j - 1];
+            }
+
+            db->catalog.indexes[i] = removed;
+            db->catalog.index_count++;
+            return status;
+        }
+
+        return DB_OK;
+    }
+
+    return DB_NOT_FOUND;
+}
+
 DBStatus catalog_create_table(DB *db, const Schema *schema) {
     if (db == NULL || schema == NULL) {
         return DB_ERROR;

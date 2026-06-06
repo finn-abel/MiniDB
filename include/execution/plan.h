@@ -19,6 +19,7 @@
 typedef enum {
     PLAN_CREATE_TABLE,
     PLAN_CREATE_INDEX,
+    PLAN_DROP_INDEX,
     PLAN_INSERT,
     PLAN_SELECT,
     PLAN_DELETE,
@@ -108,6 +109,10 @@ typedef struct {
     CatalogIndex index;
 } CreateIndexPlan;
 
+typedef struct {
+    char index_name[MAX_INDEX_NAME];
+} DropIndexPlan;
+
 /*
  * MetaCommandPlan preserves shell commands for shell-level execution.
  */
@@ -125,6 +130,7 @@ typedef struct {
     union {
         CreateTablePlan create_table;
         CreateIndexPlan create_index;
+        DropIndexPlan drop_index;
         InsertPlan insert;
         SelectPlan select;
         DeletePlan delete_plan;

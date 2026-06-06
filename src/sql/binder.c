@@ -83,6 +83,11 @@ static DBStatus binder_copy_statement(
             }
 
             return DB_OK;
+        case STATEMENT_DROP_INDEX:
+            return ast_drop_index_init(
+                &dest->drop_index,
+                source->drop_index.index_name
+            );
         case STATEMENT_INSERT:
             /*
              * INSERT values may contain TEXT, so ast_insert_add_value performs
@@ -395,6 +400,17 @@ static DBStatus binder_bind_create_index(
     return DB_OK;
 }
 
+static DBStatus binder_bind_drop_index(
+    const DB *db,
+    const Statement *statement
+) {
+    if (!catalog_index_exists(db, statement->drop_index.index_name)) {
+        return DB_NOT_FOUND;
+    }
+
+    return DB_OK;
+}
+
 static DBStatus binder_bind_insert(
     const DB *db,
     const Statement *statement,
@@ -614,6 +630,9 @@ DBStatus binder_bind(
             break;
         case STATEMENT_CREATE_INDEX:
             status = binder_bind_create_index(db, statement, out_bound);
+            break;
+        case STATEMENT_DROP_INDEX:
+            status = binder_bind_drop_index(db, statement);
             break;
         case STATEMENT_INSERT:
             status = binder_bind_insert(db, statement, out_bound);

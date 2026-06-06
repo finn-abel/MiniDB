@@ -68,9 +68,15 @@ DBStatus catalog_create_table(DB *db, const Schema *schema);
 
 /*
  * Adds a CREATE INDEX entry to the catalog and persists it.
- * The executor builds the B+ tree file before this metadata is committed.
+ * The executor builds the secondary index file before this metadata is committed.
  */
 DBStatus catalog_create_index(DB *db, const CatalogIndex *index);
+
+/*
+ * Removes an explicit secondary index from the catalog and persists it.
+ * Primary-key indexes are implicit schema metadata and cannot be dropped here.
+ */
+DBStatus catalog_drop_index(DB *db, const char *index_name);
 
 /*
  * Copies a table schema out of the catalog by table name.

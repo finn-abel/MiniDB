@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -109,6 +110,12 @@ static long file_size(const char *path) {
     assert(stat(path, &info) == 0);
 
     return info.st_size;
+}
+
+static bool file_exists(const char *path) {
+    struct stat info;
+
+    return stat(path, &info) == 0;
 }
 
 static void test_executor_create_table(void) {
@@ -362,6 +369,46 @@ static void test_executor_secondary_index_workflow(void) {
     cleanup_db_dir(path);
 }
 
+static void test_executor_drop_index(void) {
+    const char *path = "test_executor_drop_index";
+    const char *index_path = "test_executor_drop_index/indexes/users_age_idx.sidx";
+
+    DB db;
+    FILE *out;
+
+    setup_db(&db, path);
+    execute_sql(&db, "CREATE TABLE users (id INT PRIMARY KEY, name TEXT, age INT);", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (1, \"Finn\", 20);", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (2, \"Alex\", 17);", stdout);
+    execute_sql(&db, "CREATE INDEX users_age_idx ON users (age);", stdout);
+
+    assert(db.catalog.index_count == 1);
+    assert(strcmp(db.catalog.indexes[0].index_name, "users_age_idx") == 0);
+    assert(file_exists(index_path) == true);
+
+    execute_sql(&db, "DROP INDEX users_age_idx;", stdout);
+
+    assert(db.catalog.index_count == 0);
+    assert(file_exists(index_path) == false);
+
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT name FROM users WHERE age = 20;", out);
+    rewind(out);
+    assert_next_line(out, "Finn\n");
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    assert(execute_sql_status(&db, "DROP INDEX users_age_idx;", stdout) == DB_NOT_FOUND);
+
+    assert(db_close(&db) == DB_OK);
+    assert(db_open(&db, path) == DB_OK);
+    assert(db.catalog.index_count == 0);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
 static void test_executor_select_with_filter_and_project(void) {
     const char *path = "test_executor_select_filter_project";
 
@@ -556,6 +603,7 @@ int main(void) {
     test_executor_primary_key_delete_maintains_index();
     test_executor_primary_key_schema_persists_after_reopen();
     test_executor_secondary_index_workflow();
+    test_executor_drop_index();
     test_executor_select_with_filter_and_project();
     test_executor_delete_with_condition();
     test_executor_delete_without_condition();

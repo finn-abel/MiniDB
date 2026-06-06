@@ -137,6 +137,23 @@ static DBStatus planner_build_create_index_plan(
     return DB_OK;
 }
 
+static DBStatus planner_build_drop_index_plan(
+    const BoundStatement *bound,
+    Plan *out_plan
+) {
+    DBStatus status = plan_init(out_plan, PLAN_DROP_INDEX);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return planner_copy_name(
+        out_plan->drop_index.index_name,
+        sizeof(out_plan->drop_index.index_name),
+        bound->statement.drop_index.index_name
+    );
+}
+
 static DBStatus planner_build_insert_plan(
     const BoundStatement *bound,
     Plan *out_plan
@@ -382,6 +399,9 @@ DBStatus planner_create_plan(const BoundStatement *bound, Plan *out_plan) {
             break;
         case STATEMENT_CREATE_INDEX:
             status = planner_build_create_index_plan(bound, out_plan);
+            break;
+        case STATEMENT_DROP_INDEX:
+            status = planner_build_drop_index_plan(bound, out_plan);
             break;
         case STATEMENT_INSERT:
             status = planner_build_insert_plan(bound, out_plan);

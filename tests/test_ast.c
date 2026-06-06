@@ -74,6 +74,21 @@ static void test_ast_create_table_rejects_when_full(void) {
     assert(ast_create_table_add_column(&statement, "extra", VALUE_INT) == DB_FULL);
 }
 
+static void test_ast_drop_index_statement(void) {
+    DropIndexStatement statement;
+
+    assert(ast_drop_index_init(&statement, "users_age_idx") == DB_OK);
+
+    assert(strcmp(statement.index_name, "users_age_idx") == 0);
+}
+
+static void test_ast_drop_index_rejects_null_inputs(void) {
+    DropIndexStatement statement;
+
+    assert(ast_drop_index_init(NULL, "users_age_idx") == DB_ERROR);
+    assert(ast_drop_index_init(&statement, NULL) == DB_ERROR);
+}
+
 static void test_ast_insert_statement(void) {
     InsertStatement statement;
     Value id = value_int(1);
@@ -308,6 +323,8 @@ int main(void) {
     test_ast_create_table_rejects_null_inputs();
     test_ast_create_table_rejects_invalid_type();
     test_ast_create_table_rejects_when_full();
+    test_ast_drop_index_statement();
+    test_ast_drop_index_rejects_null_inputs();
     test_ast_insert_statement();
     test_ast_insert_rejects_null_inputs();
     test_ast_insert_rejects_when_full();

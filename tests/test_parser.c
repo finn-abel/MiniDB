@@ -69,6 +69,17 @@ static void test_parser_create_index(void) {
     ast_statement_free(&statement);
 }
 
+static void test_parser_drop_index(void) {
+    Statement statement;
+
+    assert(parser_parse("DROP INDEX users_age_idx;", &statement) == DB_OK);
+
+    assert(statement.type == STATEMENT_DROP_INDEX);
+    assert(strcmp(statement.drop_index.index_name, "users_age_idx") == 0);
+
+    ast_statement_free(&statement);
+}
+
 static void test_parser_insert(void) {
     Statement statement;
 
@@ -297,10 +308,18 @@ static void test_parser_rejects_bad_update(void) {
     assert(parser_parse("UPDATE users SET age WHERE id = 1;", &statement) == DB_PARSE_ERROR);
 }
 
+static void test_parser_rejects_bad_drop(void) {
+    Statement statement;
+
+    assert(parser_parse("DROP TABLE users;", &statement) == DB_PARSE_ERROR);
+    assert(parser_parse("DROP INDEX;", &statement) == DB_PARSE_ERROR);
+}
+
 int main(void) {
     test_parser_create_table();
     test_parser_create_table_with_constraints();
     test_parser_create_index();
+    test_parser_drop_index();
     test_parser_insert();
     test_parser_select_star();
     test_parser_select_columns_with_where();
@@ -321,6 +340,7 @@ int main(void) {
     test_parser_rejects_select_missing_from();
     test_parser_rejects_bad_where();
     test_parser_rejects_bad_update();
+    test_parser_rejects_bad_drop();
 
     printf("All parser tests passed.\n");
 

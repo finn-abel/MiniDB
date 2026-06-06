@@ -58,6 +58,27 @@ static void add_users_table(DB *db) {
     assert(catalog_create_table(db, &schema) == DB_OK);
 }
 
+static void add_users_age_index(DB *db, const char *path) {
+    CatalogIndex index;
+    char index_path[MAX_DB_PATH];
+    FILE *file;
+
+    snprintf(index_path, sizeof(index_path), "%s/indexes/users_age_idx.sidx", path);
+
+    file = fopen(index_path, "wb");
+    assert(file != NULL);
+    assert(fclose(file) == 0);
+
+    memset(&index, 0, sizeof(index));
+    strcpy(index.index_name, "users_age_idx");
+    strcpy(index.table_name, "users");
+    index.column_count = 1;
+    strcpy(index.column_names[0], "age");
+    index.unique = false;
+
+    assert(catalog_create_index(db, &index) == DB_OK);
+}
+
 static void bind_sql(DB *db, const char *sql, Statement *statement, BoundStatement *bound) {
     assert(parser_parse(sql, statement) == DB_OK);
     assert(binder_bind(db, statement, bound) == DB_OK);
@@ -111,6 +132,31 @@ static void test_planner_create_index_plan(void) {
     assert(plan.create_index.index.column_count == 1);
     assert(strcmp(plan.create_index.index.column_names[0], "age") == 0);
     assert(plan.create_index.index.unique == false);
+
+    plan_free(&plan);
+    binder_bound_statement_free(&bound);
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_planner_drop_index_plan(void) {
+    const char *path = "test_planner_drop_index";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+    Plan plan;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    add_users_age_index(&db, path);
+    bind_sql(&db, "DROP INDEX users_age_idx;", &statement, &bound);
+
+    assert(planner_create_plan(&bound, &plan) == DB_OK);
+
+    assert(plan.type == PLAN_DROP_INDEX);
+    assert(strcmp(plan.drop_index.index_name, "users_age_idx") == 0);
 
     plan_free(&plan);
     binder_bound_statement_free(&bound);
@@ -324,6 +370,7 @@ static void test_planner_rejects_null_inputs(void) {
 int main(void) {
     test_planner_create_table_plan();
     test_planner_create_index_plan();
+    test_planner_drop_index_plan();
     test_planner_insert_plan();
     test_planner_select_star_plan();
     test_planner_select_filter_project_plan();

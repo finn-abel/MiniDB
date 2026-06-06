@@ -87,6 +87,10 @@ static TokenType lexer_keyword_type(const char *text, uint32_t length) {
         return TOKEN_CREATE;
     }
 
+    if (lexer_text_equals_keyword(text, length, "DROP")) {
+        return TOKEN_DROP;
+    }
+
     if (lexer_text_equals_keyword(text, length, "TABLE")) {
         return TOKEN_TABLE;
     }

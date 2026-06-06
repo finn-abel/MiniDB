@@ -68,6 +68,18 @@ static void test_lexer_create_statement(void) {
     assert_next_token(&lexer, TOKEN_EOF, "");
 }
 
+static void test_lexer_drop_index_statement(void) {
+    Lexer lexer;
+
+    assert(lexer_init(&lexer, "DROP INDEX users_age_idx;") == DB_OK);
+
+    assert_next_token(&lexer, TOKEN_DROP, "DROP");
+    assert_next_token(&lexer, TOKEN_INDEX, "INDEX");
+    assert_next_token(&lexer, TOKEN_IDENTIFIER, "users_age_idx");
+    assert_next_token(&lexer, TOKEN_SEMICOLON, ";");
+    assert_next_token(&lexer, TOKEN_EOF, "");
+}
+
 static void test_lexer_select_statement(void) {
     Lexer lexer;
 
@@ -194,6 +206,7 @@ static void test_lexer_rejects_bang_without_equal(void) {
 int main(void) {
     test_lexer_insert_statement();
     test_lexer_create_statement();
+    test_lexer_drop_index_statement();
     test_lexer_select_statement();
     test_lexer_delete_statement();
     test_lexer_update_statement();

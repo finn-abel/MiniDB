@@ -17,6 +17,7 @@
 typedef enum {
     STATEMENT_CREATE_TABLE,
     STATEMENT_CREATE_INDEX,
+    STATEMENT_DROP_INDEX,
     STATEMENT_INSERT,
     STATEMENT_SELECT,
     STATEMENT_DELETE,
@@ -48,6 +49,13 @@ typedef struct {
     uint16_t column_count;
     char column_names[MAX_COLUMNS][MAX_COLUMN_NAME];
 } CreateIndexStatement;
+
+/*
+ * DROP INDEX index_name
+ */
+typedef struct {
+    char index_name[MAX_INDEX_NAME];
+} DropIndexStatement;
 
 /*
  * INSERT INTO table_name VALUES (...values...)
@@ -114,6 +122,7 @@ typedef struct {
     union {
         CreateTableStatement create_table;
         CreateIndexStatement create_index;
+        DropIndexStatement drop_index;
         InsertStatement insert;
         SelectStatement select;
         DeleteStatement delete_statement;
@@ -162,6 +171,11 @@ DBStatus ast_create_index_init(
 DBStatus ast_create_index_add_column(
     CreateIndexStatement *statement,
     const char *column_name
+);
+
+DBStatus ast_drop_index_init(
+    DropIndexStatement *statement,
+    const char *index_name
 );
 
 /*
