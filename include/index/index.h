@@ -23,11 +23,10 @@ typedef struct {
 } IndexEntry;
 
 /*
- * Index owns an in-memory list of key -> RID entries.
+ * Index owns an in-memory sorted list of key -> RID entries.
  *
- * The initial implementation is intentionally simple: it supports primary
- * keys on INT columns and performs linear searches. Step 28 will replace the
- * entry layout with a sorted array and binary search.
+ * The Step 28 implementation supports primary keys on INT columns, keeps
+ * entries sorted by key, and uses binary search for lookup.
  */
 typedef struct {
     IndexType type;

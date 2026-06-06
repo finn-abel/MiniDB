@@ -58,6 +58,36 @@ static void test_index_rejects_duplicate_primary_key(void) {
     index_free(&index);
 }
 
+static void test_index_insert_keeps_entries_sorted(void) {
+    Index index;
+    Value key_five = value_int(5);
+    Value key_one = value_int(1);
+    Value key_two = value_int(2);
+    RID rid_five = {2, 4};
+    RID rid_one = {0, 0};
+    RID rid_two = {0, 1};
+    RID found = {0, 0};
+
+    assert(index_init(&index, INDEX_TYPE_PRIMARY_INT) == DB_OK);
+
+    assert(index_insert(&index, &key_five, rid_five) == DB_OK);
+    assert(index_insert(&index, &key_one, rid_one) == DB_OK);
+    assert(index_insert(&index, &key_two, rid_two) == DB_OK);
+
+    assert(index.count == 3);
+    assert(index.entries[0].key.int_value == 1);
+    assert(rid_equal(&index.entries[0].rid, &rid_one) == true);
+    assert(index.entries[1].key.int_value == 2);
+    assert(rid_equal(&index.entries[1].rid, &rid_two) == true);
+    assert(index.entries[2].key.int_value == 5);
+    assert(rid_equal(&index.entries[2].rid, &rid_five) == true);
+
+    assert(index_find(&index, &key_two, &found) == DB_OK);
+    assert(rid_equal(&found, &rid_two) == true);
+
+    index_free(&index);
+}
+
 static void test_index_find_missing_key(void) {
     Index index;
     Value key = value_int(10);
@@ -82,6 +112,31 @@ static void test_index_delete_key(void) {
     assert(index_delete(&index, &key) == DB_OK);
     assert(index.count == 0);
     assert(index_find(&index, &key, &found) == DB_NOT_FOUND);
+
+    index_free(&index);
+}
+
+static void test_index_delete_keeps_entries_sorted(void) {
+    Index index;
+    Value key_one = value_int(1);
+    Value key_two = value_int(2);
+    Value key_five = value_int(5);
+    RID rid_one = {0, 0};
+    RID rid_two = {0, 1};
+    RID rid_five = {2, 4};
+
+    assert(index_init(&index, INDEX_TYPE_PRIMARY_INT) == DB_OK);
+
+    assert(index_insert(&index, &key_one, rid_one) == DB_OK);
+    assert(index_insert(&index, &key_two, rid_two) == DB_OK);
+    assert(index_insert(&index, &key_five, rid_five) == DB_OK);
+    assert(index_delete(&index, &key_two) == DB_OK);
+
+    assert(index.count == 2);
+    assert(index.entries[0].key.int_value == 1);
+    assert(rid_equal(&index.entries[0].rid, &rid_one) == true);
+    assert(index.entries[1].key.int_value == 5);
+    assert(rid_equal(&index.entries[1].rid, &rid_five) == true);
 
     index_free(&index);
 }
@@ -136,8 +191,10 @@ int main(void) {
     test_index_init_rejects_null();
     test_index_insert_and_find_int_key();
     test_index_rejects_duplicate_primary_key();
+    test_index_insert_keeps_entries_sorted();
     test_index_find_missing_key();
     test_index_delete_key();
+    test_index_delete_keeps_entries_sorted();
     test_index_delete_missing_key();
     test_index_rejects_text_key();
     test_index_rejects_null_inputs();

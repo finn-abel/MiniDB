@@ -41,15 +41,29 @@ static DBStatus index_find_position(
     }
 
     /*
-     * The first index implementation is intentionally unsorted and in-memory.
-     * Step 28 will replace this linear scan with binary search over sorted
-     * entries while preserving the public index_find API.
+     * Entries are sorted by INT key. This is a lower-bound binary search:
+     * on success, out_position is the existing key position; on DB_NOT_FOUND,
+     * out_position is where a new key should be inserted to preserve sorting.
      */
-    for (size_t i = 0; i < index->count; i++) {
-        if (index->entries[i].key.int_value == key->int_value) {
-            *out_position = i;
-            return DB_OK;
+    size_t left = 0;
+    size_t right = index->count;
+
+    while (left < right) {
+        size_t mid = left + (right - left) / 2;
+        int32_t mid_key = index->entries[mid].key.int_value;
+
+        if (mid_key < key->int_value) {
+            left = mid + 1;
+        } else {
+            right = mid;
         }
+    }
+
+    *out_position = left;
+
+    if (left < index->count
+        && index->entries[left].key.int_value == key->int_value) {
+        return DB_OK;
     }
 
     return DB_NOT_FOUND;
@@ -118,8 +132,8 @@ DBStatus index_insert(Index *index, const Value *key, RID rid) {
         return status;
     }
 
-    size_t existing_position = 0;
-    status = index_find_position(index, key, &existing_position);
+    size_t position = 0;
+    status = index_find_position(index, key, &position);
 
     // Primary-key indexes enforce uniqueness by rejecting existing keys.
     if (status == DB_OK) {
@@ -138,9 +152,14 @@ DBStatus index_insert(Index *index, const Value *key, RID rid) {
         }
     }
 
+    // Open a slot at the lower-bound position to keep entries sorted.
+    for (size_t i = index->count; i > position; i--) {
+        index->entries[i] = index->entries[i - 1];
+    }
+
     // Copy the key into the index so callers keep ownership of their Value.
-    index->entries[index->count].key = value_int(key->int_value);
-    index->entries[index->count].rid = rid;
+    index->entries[position].key = value_int(key->int_value);
+    index->entries[position].rid = rid;
     index->count++;
 
     return DB_OK;
