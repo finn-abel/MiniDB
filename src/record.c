@@ -8,6 +8,15 @@
 #include "record.h"
 #include "rid.h"
 #include "row.h"
+#include "storage/free_space.h"
+
+static uint32_t record_required_page_space(uint32_t row_len) {
+    /*
+     * A new row normally needs row bytes plus one slot entry. If page_insert
+     * can reuse a deleted slot, this is conservative but still correct.
+     */
+    return row_len + sizeof(PageSlot);
+}
 
 DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
     if (table_file == NULL || row == NULL || out_rid == NULL) {
@@ -27,21 +36,28 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
         return status;
     }
 
-    uint32_t page_count = 0;
-
-    status = buffer_pool_page_count(table_file, &page_count);
-
-    if (status != DB_OK) {
-        free(row_bytes);
-        return status;
-    }
+    uint32_t required_space = record_required_page_space(row_len);
 
     /*
-     * First try to insert into an existing page with enough free space.
+     * Ask the free-space map for candidate pages instead of scanning every
+     * page in the table file. free_space_find_page lazily rebuilds the map if
+     * this table has not been opened through table_open yet.
      */
-    for (uint32_t page_id = 0; page_id < page_count; page_id++) {
-        uint8_t *page_buffer = NULL;
+    uint32_t candidate_page_id = 0;
+    DBStatus find_status = free_space_find_page(
+        table_file,
+        required_space,
+        &candidate_page_id
+    );
 
+    while (find_status == DB_OK) {
+        uint8_t *page_buffer = NULL;
+        uint32_t page_id = candidate_page_id;
+
+        /*
+         * Fetch only the candidate page chosen by the FSM. This is the main
+         * win over the previous "read every page until one works" approach.
+         */
         status = buffer_pool_fetch_page(table_file, page_id, &page_buffer);
 
         if (status != DB_OK) {
@@ -56,6 +72,23 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
         status = page_insert(page_buffer, row_bytes, row_len, &slot_id);
 
         if (status == DB_OK) {
+            /*
+             * The page changed in memory, so update the FSM before unpinning.
+             * If the update fails, unpin as clean because the caller will see
+             * an error and the changed page should not be flushed.
+             */
+            status = free_space_update(
+                table_file,
+                page_id,
+                page_free_space(page_buffer)
+            );
+
+            if (status != DB_OK) {
+                buffer_pool_unpin_page(table_file, page_id, false);
+                free(row_bytes);
+                return status;
+            }
+
             status = buffer_pool_unpin_page(table_file, page_id, true);
 
             if (status != DB_OK) {
@@ -78,10 +111,27 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
         }
 
         /*
-         * DB_FULL just means this page did not have enough room.
-         * Keep searching the next page.
+         * DB_FULL means the FSM candidate did not actually fit the row. That
+         * can happen when the map is stale or when our required-space estimate
+         * was conservative around deleted-slot reuse.
          */
         if (status != DB_FULL) {
+            buffer_pool_unpin_page(table_file, page_id, false);
+            free(row_bytes);
+            return status;
+        }
+
+        /*
+         * If the map was stale, refresh this page's free-space value and ask
+         * the FSM for another candidate.
+         */
+        status = free_space_update(
+            table_file,
+            page_id,
+            page_free_space(page_buffer)
+        );
+
+        if (status != DB_OK) {
             buffer_pool_unpin_page(table_file, page_id, false);
             free(row_bytes);
             return status;
@@ -93,15 +143,39 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
             free(row_bytes);
             return status;
         }
+
+        find_status = free_space_find_page(
+            table_file,
+            required_space,
+            &candidate_page_id
+        );
+    }
+
+    if (find_status != DB_NOT_FOUND) {
+        free(row_bytes);
+        return find_status;
     }
 
     /*
      * No existing page had enough space.
      * Create a new page at the end of the file.
      */
+    uint32_t page_count = 0;
+
+    status = buffer_pool_page_count(table_file, &page_count);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
+
     uint32_t new_page_id = page_count;
     uint8_t new_page_buffer[PAGE_SIZE];
 
+    /*
+     * Build the page in a stack buffer first. This preserves the old behavior
+     * for rows that are too large: fail before allocating an empty disk page.
+     */
     status = page_init(new_page_buffer, new_page_id);
 
     if (status != DB_OK) {
@@ -119,6 +193,10 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
 
     uint8_t *page_buffer = NULL;
 
+    /*
+     * Now reserve and pin the real page in the buffer pool, then copy the
+     * already-validated page image into the cached frame.
+     */
     status = buffer_pool_new_page(table_file, &new_page_id, &page_buffer);
 
     if (status != DB_OK) {
@@ -127,6 +205,18 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid) {
     }
 
     memcpy(page_buffer, new_page_buffer, PAGE_SIZE);
+
+    status = free_space_update(
+        table_file,
+        new_page_id,
+        page_free_space(page_buffer)
+    );
+
+    if (status != DB_OK) {
+        buffer_pool_unpin_page(table_file, new_page_id, false);
+        free(row_bytes);
+        return status;
+    }
 
     status = buffer_pool_unpin_page(table_file, new_page_id, true);
 
@@ -215,6 +305,22 @@ DBStatus record_delete(const char *table_file, RID rid) {
      * Mark the slot as deleted.
      */
     status = page_delete(page_buffer, rid.slot_id);
+
+    if (status != DB_OK) {
+        buffer_pool_unpin_page(table_file, rid.page_id, false);
+        return status;
+    }
+
+    /*
+     * Keep the in-memory free-space map in sync with the changed page.
+     * Deleted row bytes are not compacted yet, so this usually reflects slot
+     * reuse rather than reclaimed row storage.
+     */
+    status = free_space_update(
+        table_file,
+        rid.page_id,
+        page_free_space(page_buffer)
+    );
 
     if (status != DB_OK) {
         buffer_pool_unpin_page(table_file, rid.page_id, false);
