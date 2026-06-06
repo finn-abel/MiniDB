@@ -151,6 +151,24 @@ DBStatus schema_get_column_type(
     return DB_OK;
 }
 
+DBStatus schema_get_primary_key_index(
+    const Schema *schema,
+    uint16_t *out_index
+) {
+    if (schema == NULL || out_index == NULL) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < schema->column_count; i++) {
+        if (schema->columns[i].primary_key) {
+            *out_index = i;
+            return DB_OK;
+        }
+    }
+
+    return DB_NOT_FOUND;
+}
+
 DBStatus schema_validate_row(const Schema *schema, const Row *row) {
     if (schema == NULL || row == NULL) {
         return DB_ERROR;

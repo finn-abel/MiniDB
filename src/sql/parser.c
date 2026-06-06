@@ -116,6 +116,81 @@ static DBStatus parser_parse_type(Parser *parser, ValueType *out_type) {
     return DB_PARSE_ERROR;
 }
 
+static DBStatus parser_parse_column_constraints(
+    Parser *parser,
+    bool *out_not_null,
+    bool *out_primary_key
+) {
+    if (parser == NULL || out_not_null == NULL || out_primary_key == NULL) {
+        return DB_ERROR;
+    }
+
+    *out_not_null = false;
+    *out_primary_key = false;
+
+    while (parser->current.type == TOKEN_IDENTIFIER) {
+        if (parser_text_equals(parser->current.lexeme, "PRIMARY")) {
+            if (*out_primary_key) {
+                return DB_PARSE_ERROR;
+            }
+
+            DBStatus status = parser_advance(parser);
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            if (
+                parser->current.type != TOKEN_IDENTIFIER ||
+                !parser_text_equals(parser->current.lexeme, "KEY")
+            ) {
+                return DB_PARSE_ERROR;
+            }
+
+            *out_primary_key = true;
+            status = parser_advance(parser);
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            continue;
+        }
+
+        if (parser_text_equals(parser->current.lexeme, "NOT")) {
+            if (*out_not_null) {
+                return DB_PARSE_ERROR;
+            }
+
+            DBStatus status = parser_advance(parser);
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            if (
+                parser->current.type != TOKEN_IDENTIFIER ||
+                !parser_text_equals(parser->current.lexeme, "NULL")
+            ) {
+                return DB_PARSE_ERROR;
+            }
+
+            *out_not_null = true;
+            status = parser_advance(parser);
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            continue;
+        }
+
+        break;
+    }
+
+    return DB_OK;
+}
+
 /*
  * Parses literal values that can appear in INSERT VALUES or WHERE clauses.
  *
@@ -251,6 +326,8 @@ static DBStatus parser_parse_create_table(Parser *parser, Statement *out_stateme
     char table_name[MAX_TABLE_NAME];
     char column_name[MAX_COLUMN_NAME];
     ValueType column_type;
+    bool not_null;
+    bool primary_key;
     DBStatus status;
 
     status = ast_statement_init(out_statement, STATEMENT_CREATE_TABLE);
@@ -306,10 +383,22 @@ static DBStatus parser_parse_create_table(Parser *parser, Statement *out_stateme
             return status;
         }
 
-        status = ast_create_table_add_column(
+        status = parser_parse_column_constraints(
+            parser,
+            &not_null,
+            &primary_key
+        );
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        status = ast_create_table_add_column_with_constraints(
             &out_statement->create_table,
             column_name,
-            column_type
+            column_type,
+            not_null,
+            primary_key
         );
 
         if (status != DB_OK) {

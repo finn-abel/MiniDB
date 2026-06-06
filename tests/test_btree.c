@@ -113,6 +113,28 @@ static void test_btree_rejects_duplicate_key(void) {
     cleanup_file(path);
 }
 
+static void test_btree_delete_key(void) {
+    const char *path = "test_btree_delete.db";
+    BTree tree;
+    RID first = rid_for_key(10);
+    RID second = rid_for_key(20);
+    RID found;
+
+    cleanup_file(path);
+
+    assert(btree_open(&tree, path) == DB_OK);
+    assert(btree_insert(&tree, 10, first) == DB_OK);
+    assert(btree_insert(&tree, 20, second) == DB_OK);
+    assert(btree_delete(&tree, 10) == DB_OK);
+    assert(btree_search(&tree, 10, &found) == DB_NOT_FOUND);
+    assert(btree_search(&tree, 20, &found) == DB_OK);
+    assert(rid_equal(&found, &second) == true);
+    assert(btree_delete(&tree, 10) == DB_NOT_FOUND);
+    assert(btree_close(&tree) == DB_OK);
+
+    cleanup_file(path);
+}
+
 static void test_btree_root_split_keeps_page_zero_as_internal_root(void) {
     const char *path = "test_btree_root_split.db";
     BTree tree;
@@ -321,6 +343,7 @@ static void test_btree_rejects_closed_tree_operations(void) {
 
     assert(btree_search(&tree, 10, &rid) == DB_ERROR);
     assert(btree_insert(&tree, 10, rid) == DB_ERROR);
+    assert(btree_delete(&tree, 10) == DB_ERROR);
     assert(btree_split_leaf(&tree, 0, &separator_key, &right_page_id) == DB_ERROR);
     assert(btree_split_internal(&tree, 0, &separator_key, &right_page_id) == DB_ERROR);
     assert(btree_close(&tree) == DB_ERROR);
@@ -341,6 +364,7 @@ static void test_btree_rejects_null_inputs(void) {
     assert(btree_search(NULL, 10, &rid) == DB_ERROR);
     assert(btree_search(&tree, 10, NULL) == DB_ERROR);
     assert(btree_insert(NULL, 10, rid) == DB_ERROR);
+    assert(btree_delete(NULL, 10) == DB_ERROR);
     assert(btree_split_leaf(NULL, BTREE_ROOT_PAGE_ID, &(int32_t){0}, &(uint32_t){0}) == DB_ERROR);
     assert(btree_split_internal(NULL, BTREE_ROOT_PAGE_ID, &(int32_t){0}, &(uint32_t){0}) == DB_ERROR);
     assert(btree_close(&tree) == DB_OK);
@@ -353,6 +377,7 @@ int main(void) {
     test_btree_insert_and_search_single_key();
     test_btree_insert_and_search_negative_keys();
     test_btree_rejects_duplicate_key();
+    test_btree_delete_key();
     test_btree_root_split_keeps_page_zero_as_internal_root();
     test_btree_leaf_split_and_search_many_keys();
     test_btree_searches_between_sparse_keys();

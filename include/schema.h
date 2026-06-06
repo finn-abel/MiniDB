@@ -75,6 +75,14 @@ DBStatus schema_get_column_type(
 );
 
 /*
+ * Finds the single primary-key column, if the schema has one.
+ */
+DBStatus schema_get_primary_key_index(
+    const Schema *schema,
+    uint16_t *out_index
+);
+
+/*
  * Checks whether a row matches the schema.
  * The row must have the same number of values as the schema has columns.
  * Each row value must match the expected column type.

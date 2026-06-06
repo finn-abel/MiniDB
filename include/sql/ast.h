@@ -131,6 +131,13 @@ DBStatus ast_create_table_add_column(
     const char *column_name,
     ValueType type
 );
+DBStatus ast_create_table_add_column_with_constraints(
+    CreateTableStatement *statement,
+    const char *column_name,
+    ValueType type,
+    bool not_null,
+    bool primary_key
+);
 
 /*
  * INSERT helpers build the parsed destination table and literal values.

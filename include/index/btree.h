@@ -47,6 +47,13 @@ DBStatus btree_search(BTree *tree, int32_t key, RID *out_rid);
 DBStatus btree_insert(BTree *tree, int32_t key, RID rid);
 
 /*
+ * Deletes an INT key from the tree.
+ *
+ * This first delete implementation removes leaf entries without rebalancing.
+ */
+DBStatus btree_delete(BTree *tree, int32_t key);
+
+/*
  * Splits a full leaf page. These are exposed for focused storage tests, while
  * normal callers should use btree_insert.
  */

@@ -26,6 +26,25 @@ static void test_parser_create_table(void) {
     ast_statement_free(&statement);
 }
 
+static void test_parser_create_table_with_constraints(void) {
+    Statement statement;
+
+    assert(parser_parse(
+        "CREATE TABLE users (id INT PRIMARY KEY, name TEXT NOT NULL);",
+        &statement
+    ) == DB_OK);
+
+    assert(statement.type == STATEMENT_CREATE_TABLE);
+    assert(statement.create_table.column_count == 2);
+    assert(strcmp(statement.create_table.columns[0].name, "id") == 0);
+    assert(statement.create_table.columns[0].type == VALUE_INT);
+    assert(statement.create_table.columns[0].primary_key == true);
+    assert(statement.create_table.columns[1].not_null == true);
+    assert(statement.create_table.columns[1].primary_key == false);
+
+    ast_statement_free(&statement);
+}
+
 static void test_parser_insert(void) {
     Statement statement;
 
@@ -209,6 +228,20 @@ static void test_parser_rejects_bad_create_type(void) {
     assert(parser_parse("CREATE TABLE users (id FLOAT);", &statement) == DB_PARSE_ERROR);
 }
 
+static void test_parser_rejects_bad_column_constraint(void) {
+    Statement statement;
+
+    assert(parser_parse(
+        "CREATE TABLE users (id INT PRIMARY);",
+        &statement
+    ) == DB_PARSE_ERROR);
+
+    assert(parser_parse(
+        "CREATE TABLE users (id INT NOT);",
+        &statement
+    ) == DB_PARSE_ERROR);
+}
+
 static void test_parser_rejects_empty_create_columns(void) {
     Statement statement;
 
@@ -242,6 +275,7 @@ static void test_parser_rejects_bad_update(void) {
 
 int main(void) {
     test_parser_create_table();
+    test_parser_create_table_with_constraints();
     test_parser_insert();
     test_parser_select_star();
     test_parser_select_columns_with_where();
@@ -256,6 +290,7 @@ int main(void) {
     test_parser_rejects_missing_semicolon();
     test_parser_rejects_extra_tokens();
     test_parser_rejects_bad_create_type();
+    test_parser_rejects_bad_column_constraint();
     test_parser_rejects_empty_create_columns();
     test_parser_rejects_empty_insert_values();
     test_parser_rejects_select_missing_from();

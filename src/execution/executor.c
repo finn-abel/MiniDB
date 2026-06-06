@@ -8,6 +8,7 @@
 #include "db.h"
 #include "execution/executor.h"
 #include "execution/plan.h"
+#include "index/btree.h"
 #include "record.h"
 #include "rid.h"
 #include "row.h"
@@ -33,6 +34,13 @@ typedef struct {
     Table *table;
     const DeletePlan *plan;
     Transaction *transaction;
+    /*
+     * DELETE scans rows, so the callback has the old row value needed to remove
+     * its primary-key entry before the row slot is tombstoned.
+     */
+    BTree *primary_key_index;
+    uint16_t primary_key_column;
+    bool has_primary_key;
 } DeleteContext;
 
 /*
@@ -43,6 +51,13 @@ typedef struct {
     Table *table;
     const UpdatePlan *plan;
     Transaction *transaction;
+    /*
+     * UPDATE may change either the primary-key value or the row's RID. Both
+     * cases require replacing the key -> RID entry after the row write.
+     */
+    BTree *primary_key_index;
+    uint16_t primary_key_column;
+    bool has_primary_key;
 } UpdateContext;
 
 typedef struct {
@@ -73,6 +88,140 @@ static DBStatus executor_copy_value(Value *dest, const Value *source) {
     }
 
     return DB_TYPE_ERROR;
+}
+
+static DBStatus executor_primary_key_index_path(
+    const DB *db,
+    const char *table_name,
+    char *out_path,
+    size_t out_size
+) {
+    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    /*
+     * Matches the path convention used by catalog creation and db_open rebuild.
+     */
+    int written = snprintf(
+        out_path,
+        out_size,
+        "%s/indexes/%s_pk.btree",
+        db->path,
+        table_name
+    );
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
+static DBStatus executor_open_primary_key_index(
+    const DB *db,
+    const Schema *schema,
+    BTree *tree,
+    uint16_t *out_primary_key_column,
+    bool *out_has_primary_key
+) {
+    if (
+        db == NULL ||
+        schema == NULL ||
+        tree == NULL ||
+        out_primary_key_column == NULL ||
+        out_has_primary_key == NULL
+    ) {
+        return DB_ERROR;
+    }
+
+    *out_has_primary_key = false;
+
+    /*
+     * Tables without a primary key are still valid. In that case callers keep
+     * using the existing scan/record path and no B+ tree is opened.
+     */
+    uint16_t primary_key_column = 0;
+    DBStatus status = schema_get_primary_key_index(schema, &primary_key_column);
+
+    if (status == DB_NOT_FOUND) {
+        return DB_OK;
+    }
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    char index_path[MAX_DB_PATH];
+
+    status = executor_primary_key_index_path(
+        db,
+        schema->table_name,
+        index_path,
+        sizeof(index_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = btree_open(tree, index_path);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    *out_primary_key_column = primary_key_column;
+    *out_has_primary_key = true;
+
+    return DB_OK;
+}
+
+static DBStatus executor_get_primary_key_value(
+    const Row *row,
+    uint16_t primary_key_column,
+    int32_t *out_key
+) {
+    if (row == NULL || out_key == NULL) {
+        return DB_ERROR;
+    }
+
+    const Value *key = row_get_value_const(row, primary_key_column);
+
+    if (key == NULL || key->type != VALUE_INT) {
+        return DB_ERROR;
+    }
+
+    *out_key = key->int_value;
+
+    return DB_OK;
+}
+
+static bool executor_condition_is_primary_key_equality(
+    const Schema *schema,
+    uint16_t primary_key_column,
+    const WhereCondition *condition,
+    int32_t *out_key
+) {
+    if (schema == NULL || condition == NULL || out_key == NULL) {
+        return false;
+    }
+
+    /*
+     * The B+ tree supports point lookups only. Other predicates continue
+     * through table_scan so WHERE behavior stays complete.
+     */
+    if (
+        condition->operator_type != SQL_OPERATOR_EQUAL ||
+        condition->value.type != VALUE_INT ||
+        strcmp(schema->columns[primary_key_column].name, condition->column_name) != 0
+    ) {
+        return false;
+    }
+
+    *out_key = condition->value.int_value;
+
+    return true;
 }
 
 /*
@@ -251,6 +400,25 @@ static DBStatus executor_delete_callback(const Row *row, RID rid, void *context)
         return DB_OK;
     }
 
+    if (delete_context->has_primary_key) {
+        int32_t key = 0;
+        DBStatus status = executor_get_primary_key_value(
+            row,
+            delete_context->primary_key_column,
+            &key
+        );
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        status = btree_delete(delete_context->primary_key_index, key);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
     /*
      * Use the logged record path here because the scan callback has both the
      * matching RID and the active statement transaction.
@@ -359,19 +527,73 @@ static DBStatus executor_update_callback(const Row *row, RID rid, void *context)
 
     if (status == DB_OK) {
         RID updated_rid;
+        int32_t old_primary_key = 0;
+        int32_t new_primary_key = 0;
+        bool primary_key_changed = false;
+
+        if (update_context->has_primary_key) {
+            status = executor_get_primary_key_value(
+                row,
+                update_context->primary_key_column,
+                &old_primary_key
+            );
+        }
+
+        if (status == DB_OK && update_context->has_primary_key) {
+            status = executor_get_primary_key_value(
+                &updated_row,
+                update_context->primary_key_column,
+                &new_primary_key
+            );
+        }
+
+        if (status == DB_OK && update_context->has_primary_key) {
+            RID existing_rid;
+
+            primary_key_changed = old_primary_key != new_primary_key;
+
+            if (
+                primary_key_changed &&
+                btree_search(update_context->primary_key_index, new_primary_key, &existing_rid) == DB_OK
+            ) {
+                status = DB_ERROR;
+            }
+        }
 
         /*
          * UPDATE may be in-place or delete-plus-insert if the row grows. The
          * logged record layer handles both shapes while preserving the SQL
          * executor's simple "replace this row" request.
          */
-        status = record_update_logged(
-            update_context->table->file_path,
-            rid,
-            &updated_row,
-            &updated_rid,
-            update_context->transaction
-        );
+        if (status == DB_OK) {
+            status = record_update_logged(
+                update_context->table->file_path,
+                rid,
+                &updated_row,
+                &updated_rid,
+                update_context->transaction
+            );
+        }
+
+        if (
+            status == DB_OK &&
+            update_context->has_primary_key &&
+            (primary_key_changed || !rid_equal(&rid, &updated_rid))
+        ) {
+            /*
+             * record_update_logged can move a row when it grows. Replacing the
+             * index entry covers both key changes and RID-only movement.
+             */
+            status = btree_delete(update_context->primary_key_index, old_primary_key);
+
+            if (status == DB_OK) {
+                status = btree_insert(
+                    update_context->primary_key_index,
+                    new_primary_key,
+                    updated_rid
+                );
+            }
+        }
     }
 
     row_free(&updated_row);
@@ -388,7 +610,12 @@ static DBStatus executor_execute_create_table(DB *db, const CreateTablePlan *pla
 
 static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
     Table table;
+    BTree primary_key_index;
+    bool has_primary_key = false;
+    uint16_t primary_key_column = 0;
     RID rid;
+
+    memset(&primary_key_index, 0, sizeof(BTree));
 
     DBStatus status = table_open(&table, db, plan->table_name);
 
@@ -403,6 +630,34 @@ static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
     status = schema_validate_row(&table.schema, &plan->row);
 
     if (status == DB_OK) {
+        status = executor_open_primary_key_index(
+            db,
+            &table.schema,
+            &primary_key_index,
+            &primary_key_column,
+            &has_primary_key
+        );
+    }
+
+    if (status == DB_OK && has_primary_key) {
+        int32_t key = 0;
+        RID existing_rid;
+
+        status = executor_get_primary_key_value(&plan->row, primary_key_column, &key);
+
+        /*
+         * Enforce uniqueness before writing the table row. That keeps duplicate
+         * primary-key INSERT failures from creating orphan rows.
+         */
+        if (
+            status == DB_OK &&
+            btree_search(&primary_key_index, key, &existing_rid) == DB_OK
+        ) {
+            status = DB_ERROR;
+        }
+    }
+
+    if (status == DB_OK) {
         /*
          * The executor is inside transaction_execute_autocommit by the time it
          * reaches this call, so db->transaction has a valid txn id for WAL.
@@ -415,10 +670,34 @@ static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
         );
     }
 
+    if (status == DB_OK && has_primary_key) {
+        int32_t key = 0;
+
+        status = executor_get_primary_key_value(&plan->row, primary_key_column, &key);
+
+        /*
+         * The row is durable by this point, so the index can now point at the
+         * final RID returned by the record layer.
+         */
+        if (status == DB_OK) {
+            status = btree_insert(&primary_key_index, key, rid);
+        }
+    }
+
+    DBStatus index_close_status = DB_OK;
+
+    if (has_primary_key) {
+        index_close_status = btree_close(&primary_key_index);
+    }
+
     DBStatus close_status = table_close(&table);
 
     if (status != DB_OK) {
         return status;
+    }
+
+    if (index_close_status != DB_OK) {
+        return index_close_status;
     }
 
     return close_status;
@@ -431,10 +710,15 @@ static DBStatus executor_execute_select(
 ) {
     Table table;
     SelectContext context;
+    BTree primary_key_index;
+    bool has_primary_key = false;
+    uint16_t primary_key_column = 0;
 
     if (out == NULL) {
         return DB_ERROR;
     }
+
+    memset(&primary_key_index, 0, sizeof(BTree));
 
     DBStatus status = table_open(&table, db, plan->scan.table_name);
 
@@ -446,16 +730,86 @@ static DBStatus executor_execute_select(
     context.plan = plan;
     context.out = out;
 
+    status = executor_open_primary_key_index(
+        db,
+        &table.schema,
+        &primary_key_index,
+        &primary_key_column,
+        &has_primary_key
+    );
+
+    if (status != DB_OK) {
+        table_close(&table);
+        return status;
+    }
+
+    if (has_primary_key && plan->has_filter) {
+        int32_t key = 0;
+
+        if (
+            executor_condition_is_primary_key_equality(
+                &table.schema,
+                primary_key_column,
+                &plan->filter.condition,
+                &key
+            )
+        ) {
+            RID rid;
+            status = btree_search(&primary_key_index, key, &rid);
+
+            /*
+             * Indexed SELECT is an optimization for equality on the primary key.
+             * The normal select callback is still used so projection/filter
+             * printing remains exactly the same as the scan path.
+             */
+            if (status == DB_NOT_FOUND) {
+                status = DB_OK;
+            } else if (status == DB_OK) {
+                Row row;
+
+                status = record_get(table.file_path, rid, &row);
+
+                if (status == DB_OK) {
+                    status = executor_select_callback(&row, rid, &context);
+                    row_free(&row);
+                }
+            }
+
+            DBStatus index_close_status = btree_close(&primary_key_index);
+            DBStatus close_status = table_close(&table);
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            if (index_close_status != DB_OK) {
+                return index_close_status;
+            }
+
+            return close_status;
+        }
+    }
+
     /*
      * table_scan owns temporary rows and calls executor_select_callback for
      * each active row.
      */
     status = table_scan(&table, executor_select_callback, &context);
 
+    DBStatus index_close_status = DB_OK;
+
+    if (has_primary_key) {
+        index_close_status = btree_close(&primary_key_index);
+    }
+
     DBStatus close_status = table_close(&table);
 
     if (status != DB_OK) {
         return status;
+    }
+
+    if (index_close_status != DB_OK) {
+        return index_close_status;
     }
 
     return close_status;
@@ -464,6 +818,11 @@ static DBStatus executor_execute_select(
 static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
     Table table;
     DeleteContext context;
+    BTree primary_key_index;
+    bool has_primary_key = false;
+    uint16_t primary_key_column = 0;
+
+    memset(&primary_key_index, 0, sizeof(BTree));
 
     DBStatus status = table_open(&table, db, plan->table_name);
 
@@ -474,16 +833,45 @@ static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
     context.table = &table;
     context.plan = plan;
     context.transaction = &db->transaction;
+    context.primary_key_index = &primary_key_index;
+    context.primary_key_column = primary_key_column;
+    context.has_primary_key = false;
+
+    status = executor_open_primary_key_index(
+        db,
+        &table.schema,
+        &primary_key_index,
+        &primary_key_column,
+        &has_primary_key
+    );
+
+    if (status != DB_OK) {
+        table_close(&table);
+        return status;
+    }
+
+    context.primary_key_column = primary_key_column;
+    context.has_primary_key = has_primary_key;
 
     /*
      * DELETE is implemented as table scan plus conditional record_delete.
      */
     status = table_scan(&table, executor_delete_callback, &context);
 
+    DBStatus index_close_status = DB_OK;
+
+    if (has_primary_key) {
+        index_close_status = btree_close(&primary_key_index);
+    }
+
     DBStatus close_status = table_close(&table);
 
     if (status != DB_OK) {
         return status;
+    }
+
+    if (index_close_status != DB_OK) {
+        return index_close_status;
     }
 
     return close_status;
@@ -492,6 +880,11 @@ static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
 static DBStatus executor_execute_update(DB *db, const UpdatePlan *plan) {
     Table table;
     UpdateContext context;
+    BTree primary_key_index;
+    bool has_primary_key = false;
+    uint16_t primary_key_column = 0;
+
+    memset(&primary_key_index, 0, sizeof(BTree));
 
     DBStatus status = table_open(&table, db, plan->table_name);
 
@@ -502,16 +895,45 @@ static DBStatus executor_execute_update(DB *db, const UpdatePlan *plan) {
     context.table = &table;
     context.plan = plan;
     context.transaction = &db->transaction;
+    context.primary_key_index = &primary_key_index;
+    context.primary_key_column = primary_key_column;
+    context.has_primary_key = false;
+
+    status = executor_open_primary_key_index(
+        db,
+        &table.schema,
+        &primary_key_index,
+        &primary_key_column,
+        &has_primary_key
+    );
+
+    if (status != DB_OK) {
+        table_close(&table);
+        return status;
+    }
+
+    context.primary_key_column = primary_key_column;
+    context.has_primary_key = has_primary_key;
 
     /*
      * UPDATE is implemented as table scan plus conditional record_update.
      */
     status = table_scan(&table, executor_update_callback, &context);
 
+    DBStatus index_close_status = DB_OK;
+
+    if (has_primary_key) {
+        index_close_status = btree_close(&primary_key_index);
+    }
+
     DBStatus close_status = table_close(&table);
 
     if (status != DB_OK) {
         return status;
+    }
+
+    if (index_close_status != DB_OK) {
+        return index_close_status;
     }
 
     return close_status;

@@ -14,20 +14,29 @@ static void cleanup_db_dir(const char *path) {
     char catalog_path[MAX_DB_PATH];
     char users_path[MAX_DB_PATH];
     char posts_path[MAX_DB_PATH];
+    char users_index_path[MAX_DB_PATH];
+    char posts_index_path[MAX_DB_PATH];
     char tables_dir[MAX_DB_PATH];
+    char indexes_dir[MAX_DB_PATH];
     char wal_path[MAX_DB_PATH];
 
     snprintf(catalog_path, sizeof(catalog_path), "%s/catalog.db", path);
     snprintf(users_path, sizeof(users_path), "%s/tables/users.tbl", path);
     snprintf(posts_path, sizeof(posts_path), "%s/tables/posts.tbl", path);
+    snprintf(users_index_path, sizeof(users_index_path), "%s/indexes/users_pk.btree", path);
+    snprintf(posts_index_path, sizeof(posts_index_path), "%s/indexes/posts_pk.btree", path);
     snprintf(tables_dir, sizeof(tables_dir), "%s/tables", path);
+    snprintf(indexes_dir, sizeof(indexes_dir), "%s/indexes", path);
     snprintf(wal_path, sizeof(wal_path), "%s/minidb.wal", path);
 
     remove(users_path);
     remove(posts_path);
+    remove(users_index_path);
+    remove(posts_index_path);
     remove(wal_path);
     remove(catalog_path);
     rmdir(tables_dir);
+    rmdir(indexes_dir);
     rmdir(path);
 }
 
@@ -271,8 +280,10 @@ static void test_catalog_save_and_load(void) {
     assert(copy.column_count == 2);
     assert(strcmp(copy.columns[0].name, "id") == 0);
     assert(copy.columns[0].type == VALUE_INT);
-    assert(copy.columns[0].not_null == false);
-    assert(copy.columns[0].primary_key == false);
+    assert(copy.columns[0].not_null == true);
+    assert(copy.columns[0].primary_key == true);
+    assert(copy.columns[1].not_null == true);
+    assert(copy.columns[1].primary_key == false);
 
     assert(db_close(&second_db) == DB_OK);
 
@@ -290,6 +301,26 @@ static void test_catalog_load_rejects_bad_type(void) {
     write_catalog_file(path, "TABLE users\nCOLUMNS 1\nid FLOAT\nEND\n");
 
     assert(db_open(&db, path) == DB_TYPE_ERROR);
+
+    cleanup_db_dir(path);
+}
+
+static void test_catalog_load_old_format_without_constraints(void) {
+    const char *path = "test_catalog_old_format";
+
+    DB db;
+    Schema copy;
+
+    setup_db(&db, path);
+    assert(db_close(&db) == DB_OK);
+
+    write_catalog_file(path, "TABLE users\nCOLUMNS 1\nid INT\nEND\n");
+
+    assert(db_open(&db, path) == DB_OK);
+    assert(catalog_get_schema(&db, "users", &copy) == DB_OK);
+    assert(copy.columns[0].not_null == false);
+    assert(copy.columns[0].primary_key == false);
+    assert(db_close(&db) == DB_OK);
 
     cleanup_db_dir(path);
 }
@@ -320,6 +351,7 @@ int main(void) {
     test_catalog_table_exists();
     test_catalog_list_tables();
     test_catalog_save_and_load();
+    test_catalog_load_old_format_without_constraints();
     test_catalog_load_rejects_bad_type();
     test_catalog_load_rejects_missing_end();
 

@@ -44,10 +44,12 @@ static DBStatus binder_copy_statement(
             for (uint16_t i = 0; i < source->create_table.column_count; i++) {
                 const Column *column = &source->create_table.columns[i];
 
-                status = ast_create_table_add_column(
+                status = ast_create_table_add_column_with_constraints(
                     &dest->create_table,
                     column->name,
-                    column->type
+                    column->type,
+                    column->not_null,
+                    column->primary_key
                 );
 
                 if (status != DB_OK) {
@@ -169,6 +171,8 @@ static DBStatus binder_build_create_schema(
     const CreateTableStatement *statement,
     Schema *out_schema
 ) {
+    bool found_primary_key = false;
+
     /*
      * Convert CREATE TABLE AST metadata into a real Schema.
      * This validates duplicate column names before anything reaches catalog.
@@ -186,6 +190,14 @@ static DBStatus binder_build_create_schema(
             return DB_TYPE_ERROR;
         }
 
+        if (column->primary_key) {
+            if (found_primary_key || column->type != VALUE_INT) {
+                return DB_ERROR;
+            }
+
+            found_primary_key = true;
+        }
+
         /*
          * schema_add_column enforces unique column names, so the binder can
          * reuse the same validation the catalog will eventually rely on.
@@ -194,7 +206,7 @@ static DBStatus binder_build_create_schema(
             out_schema,
             column->name,
             column->type,
-            column->not_null,
+            column->not_null || column->primary_key,
             column->primary_key
         );
 

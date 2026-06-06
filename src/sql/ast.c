@@ -127,6 +127,22 @@ DBStatus ast_create_table_add_column(
     const char *column_name,
     ValueType type
 ) {
+    return ast_create_table_add_column_with_constraints(
+        statement,
+        column_name,
+        type,
+        false,
+        false
+    );
+}
+
+DBStatus ast_create_table_add_column_with_constraints(
+    CreateTableStatement *statement,
+    const char *column_name,
+    ValueType type,
+    bool not_null,
+    bool primary_key
+) {
     if (statement == NULL || column_name == NULL) {
         return DB_ERROR;
     }
@@ -151,12 +167,8 @@ DBStatus ast_create_table_add_column(
     }
 
     column->type = type;
-    /*
-     * Constraint parsing is not implemented yet, so parsed columns start with
-     * no constraints.
-     */
-    column->not_null = false;
-    column->primary_key = false;
+    column->not_null = not_null;
+    column->primary_key = primary_key;
     statement->column_count++;
 
     return DB_OK;

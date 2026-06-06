@@ -3,9 +3,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "buffer/buffer_pool.h"
 #include "catalog.h"
 #include "common.h"
 #include "db.h"
+#include "index/btree.h"
 #include "schema.h"
 #include "value.h"
 
@@ -65,6 +67,35 @@ static DBStatus catalog_build_table_file_path(
     return DB_OK;
 }
 
+static DBStatus catalog_build_primary_key_index_path(
+    const DB *db,
+    const char *table_name,
+    char *out_path,
+    uint32_t out_size
+) {
+    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    /*
+     * The SQL layer only supports one primary key per table, so the filename
+     * can be derived entirely from the table name.
+     */
+    int written = snprintf(
+        out_path,
+        out_size,
+        "%s/indexes/%s_pk.btree",
+        db->path,
+        table_name
+    );
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
 static const char *catalog_type_to_string(ValueType type) {
     /*
      * Convert internal value types into catalog text.
@@ -99,6 +130,107 @@ static DBStatus catalog_string_to_type(const char *text, ValueType *out_type) {
     }
 
     return DB_TYPE_ERROR;
+}
+
+static DBStatus catalog_parse_constraint_flags(
+    const char *first_flag,
+    const char *second_flag,
+    bool *out_not_null,
+    bool *out_primary_key
+) {
+    const char *flags[2];
+
+    if (out_not_null == NULL || out_primary_key == NULL) {
+        return DB_ERROR;
+    }
+
+    *out_not_null = false;
+    *out_primary_key = false;
+    flags[0] = first_flag;
+    flags[1] = second_flag;
+
+    /*
+     * New catalog files may append PRIMARY_KEY and/or NOT_NULL after the type.
+     * Old catalog files stop after the type, leaving both flag strings empty.
+     */
+    for (uint16_t i = 0; i < 2; i++) {
+        if (flags[i] == NULL || flags[i][0] == '\0') {
+            continue;
+        }
+
+        if (strcmp(flags[i], "NOT_NULL") == 0) {
+            *out_not_null = true;
+        } else if (strcmp(flags[i], "PRIMARY_KEY") == 0) {
+            *out_primary_key = true;
+        } else {
+            return DB_PARSE_ERROR;
+        }
+    }
+
+    if (*out_primary_key) {
+        *out_not_null = true;
+    }
+
+    return DB_OK;
+}
+
+static DBStatus catalog_create_primary_key_index_file(
+    const DB *db,
+    const Schema *schema
+) {
+    uint16_t primary_key_index = 0;
+    DBStatus status = schema_get_primary_key_index(schema, &primary_key_index);
+
+    if (status == DB_NOT_FOUND) {
+        return DB_OK;
+    }
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    char index_path[MAX_DB_PATH];
+
+    status = catalog_build_primary_key_index_path(
+        db,
+        schema->table_name,
+        index_path,
+        sizeof(index_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * CREATE TABLE is the first moment the primary-key access path should
+     * exist. It starts empty; INSERT will add key -> RID entries later.
+     */
+    status = buffer_pool_discard_file(index_path);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    FILE *file = fopen(index_path, "wb");
+
+    if (file == NULL) {
+        return DB_IO_ERROR;
+    }
+
+    if (fclose(file) != 0) {
+        return DB_IO_ERROR;
+    }
+
+    BTree tree;
+
+    status = btree_open(&tree, index_path);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return btree_close(&tree);
 }
 
 static void catalog_clear(Catalog *catalog) {
@@ -186,6 +318,8 @@ DBStatus catalog_load(DB *db) {
         for (uint16_t i = 0; i < column_count; i++) {
             char column_name[MAX_COLUMN_NAME];
             char type_name[32];
+            char first_flag[32];
+            char second_flag[32];
 
             if (fgets(line, sizeof(line), file) == NULL) {
                 fclose(file);
@@ -197,7 +331,19 @@ DBStatus catalog_load(DB *db) {
              * id INT
              * name TEXT
              */
-            if (sscanf(line, "%63s %31s", column_name, type_name) != 2) {
+            first_flag[0] = '\0';
+            second_flag[0] = '\0';
+
+            if (
+                sscanf(
+                    line,
+                    "%63s %31s %31s %31s",
+                    column_name,
+                    type_name,
+                    first_flag,
+                    second_flag
+                ) < 2
+            ) {
                 fclose(file);
                 return DB_PARSE_ERROR;
             }
@@ -211,16 +357,27 @@ DBStatus catalog_load(DB *db) {
                 return status;
             }
 
-            /*
-             * The text format does not store constraints yet.
-             * For now, not_null and primary_key reload as false.
-             */
+            bool not_null = false;
+            bool primary_key = false;
+
+            status = catalog_parse_constraint_flags(
+                first_flag,
+                second_flag,
+                &not_null,
+                &primary_key
+            );
+
+            if (status != DB_OK) {
+                fclose(file);
+                return status;
+            }
+
             status = schema_add_column(
                 &schema,
                 column_name,
                 type,
-                false,
-                false
+                not_null,
+                primary_key
             );
 
             if (status != DB_OK) {
@@ -289,10 +446,20 @@ DBStatus catalog_save(const DB *db) {
 
             fprintf(
                 file,
-                "%s %s\n",
+                "%s %s",
                 column->name,
                 catalog_type_to_string(column->type)
             );
+
+            if (column->primary_key) {
+                fprintf(file, " PRIMARY_KEY");
+            }
+
+            if (column->not_null) {
+                fprintf(file, " NOT_NULL");
+            }
+
+            fprintf(file, "\n");
         }
 
         fprintf(file, "END\n");
@@ -352,6 +519,13 @@ DBStatus catalog_create_table(DB *db, const Schema *schema) {
     if (fclose(table_file) != 0) {
         db->catalog.table_count--;
         return DB_IO_ERROR;
+    }
+
+    status = catalog_create_primary_key_index_file(db, schema);
+
+    if (status != DB_OK) {
+        db->catalog.table_count--;
+        return status;
     }
 
     /*

@@ -8,6 +8,10 @@
 #include "catalog.h"
 #include "common.h"
 #include "db.h"
+#include "index/btree.h"
+#include "record.h"
+#include "row.h"
+#include "schema.h"
 #include "transaction/transaction.h"
 #include "transaction/wal.h"
 
@@ -72,6 +76,201 @@ static DBStatus db_create_tables_dir(const DB *db) {
     return db_create_dir_if_needed(tables_path);
 }
 
+static DBStatus db_create_indexes_dir(const DB *db) {
+    if (db == NULL) {
+        return DB_ERROR;
+    }
+
+    char indexes_path[MAX_DB_PATH];
+
+    /*
+     * Primary-key indexes live beside table files but under their own folder
+     * so table data and access-path data can be rebuilt independently.
+     */
+    int written = snprintf(
+        indexes_path,
+        sizeof(indexes_path),
+        "%s/indexes",
+        db->path
+    );
+
+    if (written < 0 || written >= (int)sizeof(indexes_path)) {
+        return DB_ERROR;
+    }
+
+    return db_create_dir_if_needed(indexes_path);
+}
+
+static DBStatus db_table_file_path(
+    const DB *db,
+    const char *table_name,
+    char *out_path,
+    size_t out_size
+) {
+    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    int written = snprintf(out_path, out_size, "%s/tables/%s.tbl", db->path, table_name);
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
+static DBStatus db_primary_key_index_path(
+    const DB *db,
+    const char *table_name,
+    char *out_path,
+    size_t out_size
+) {
+    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+        return DB_ERROR;
+    }
+
+    /*
+     * Keep this convention in sync with catalog/executor. There is one
+     * primary-key B+ tree per table that declares an INT PRIMARY KEY.
+     */
+    int written = snprintf(
+        out_path,
+        out_size,
+        "%s/indexes/%s_pk.btree",
+        db->path,
+        table_name
+    );
+
+    if (written < 0 || written >= (int)out_size) {
+        return DB_ERROR;
+    }
+
+    return DB_OK;
+}
+
+typedef struct {
+    /*
+     * record_scan only gives us row bytes and RIDs. The rebuild context carries
+     * the opened B+ tree plus the schema position of the primary-key value.
+     */
+    BTree *tree;
+    const Schema *schema;
+    uint16_t primary_key_index;
+} DBIndexRebuildContext;
+
+static DBStatus db_index_rebuild_callback(const Row *row, RID rid, void *context) {
+    DBIndexRebuildContext *rebuild = context;
+
+    if (row == NULL || rebuild == NULL) {
+        return DB_ERROR;
+    }
+
+    const Value *key = row_get_value_const(row, rebuild->primary_key_index);
+
+    if (key == NULL || key->type != VALUE_INT) {
+        return DB_ERROR;
+    }
+
+    return btree_insert(rebuild->tree, key->int_value, rid);
+}
+
+static DBStatus db_rebuild_primary_key_index(const DB *db, const Schema *schema) {
+    uint16_t primary_key_index = 0;
+    DBStatus status = schema_get_primary_key_index(schema, &primary_key_index);
+
+    if (status == DB_NOT_FOUND) {
+        return DB_OK;
+    }
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    char index_path[MAX_DB_PATH];
+    status = db_primary_key_index_path(
+        db,
+        schema->table_name,
+        index_path,
+        sizeof(index_path)
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    /*
+     * Rebuild starts from a blank index file and replays the authoritative
+     * table rows. The buffer pool may still have cached pages for this path
+     * from an earlier open, so discard them before truncating the file.
+     */
+    status = buffer_pool_discard_file(index_path);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    FILE *index_file = fopen(index_path, "wb");
+
+    if (index_file == NULL) {
+        return DB_IO_ERROR;
+    }
+
+    if (fclose(index_file) != 0) {
+        return DB_IO_ERROR;
+    }
+
+    BTree tree;
+
+    status = btree_open(&tree, index_path);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    char table_file[MAX_DB_PATH];
+    status = db_table_file_path(db, schema->table_name, table_file, sizeof(table_file));
+
+    if (status == DB_OK) {
+        DBIndexRebuildContext context;
+
+        context.tree = &tree;
+        context.schema = schema;
+        context.primary_key_index = primary_key_index;
+
+        status = record_scan(table_file, db_index_rebuild_callback, &context);
+    }
+
+    DBStatus close_status = btree_close(&tree);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return close_status;
+}
+
+static DBStatus db_rebuild_primary_key_indexes(const DB *db) {
+    if (db == NULL) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < db->catalog.table_count; i++) {
+        /*
+         * WAL recovery currently restores table pages, not index pages. Rebuild
+         * each primary-key index from table contents after recovery/catalog load
+         * so the access path matches the durable rows.
+         */
+        DBStatus status = db_rebuild_primary_key_index(db, &db->catalog.tables[i]);
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    return DB_OK;
+}
+
 static DBStatus db_wal_path(const DB *db, char *out_path, size_t out_size) {
     if (db == NULL || out_path == NULL || out_size == 0) {
         return DB_ERROR;
@@ -124,6 +323,13 @@ DBStatus db_open(DB *db, const char *path) {
      * Create the table file directory if needed.
      */
     status = db_create_tables_dir(db);
+
+    if (status != DB_OK) {
+        memset(db, 0, sizeof(DB));
+        return status;
+    }
+
+    status = db_create_indexes_dir(db);
 
     if (status != DB_OK) {
         memset(db, 0, sizeof(DB));
@@ -192,6 +398,14 @@ DBStatus db_open(DB *db, const char *path) {
      * still follows the existing catalog_load/catalog_save path.
      */
     status = catalog_load(db);
+
+    if (status != DB_OK) {
+        wal_close(&db->wal);
+        memset(db, 0, sizeof(DB));
+        return status;
+    }
+
+    status = db_rebuild_primary_key_indexes(db);
 
     if (status != DB_OK) {
         wal_close(&db->wal);

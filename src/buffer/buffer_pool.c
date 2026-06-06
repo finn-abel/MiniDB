@@ -359,6 +359,33 @@ DBStatus buffer_pool_flush_all(void) {
     return result;
 }
 
+DBStatus buffer_pool_discard_file(const char *table_file) {
+    if (table_file == NULL) {
+        return DB_ERROR;
+    }
+
+    for (uint32_t i = 0; i < BUFFER_POOL_SIZE; i++) {
+        BufferFrame *frame = &global_buffer_pool.frames[i];
+
+        if (!frame->is_valid || strcmp(frame->table_file, table_file) != 0) {
+            continue;
+        }
+
+        if (frame->pin_count != 0) {
+            return DB_ERROR;
+        }
+
+        /*
+         * Discard is for intentional file rebuilds. Do not flush here: the
+         * caller is replacing the file contents and stale cached bytes must not
+         * be written back over the rebuilt file.
+         */
+        memset(frame, 0, sizeof(BufferFrame));
+    }
+
+    return DB_OK;
+}
+
 DBStatus buffer_pool_page_count(const char *table_file, uint32_t *out_page_count) {
     if (table_file == NULL || out_page_count == NULL) {
         return DB_ERROR;

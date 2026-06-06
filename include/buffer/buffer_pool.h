@@ -77,6 +77,14 @@ DBStatus buffer_pool_flush_page(const char *table_file, uint32_t page_id);
 DBStatus buffer_pool_flush_all(void);
 
 /*
+ * Drops cached pages for one file.
+ *
+ * This is used when a file is intentionally rebuilt from scratch. Pinned pages
+ * cannot be discarded.
+ */
+DBStatus buffer_pool_discard_file(const char *table_file);
+
+/*
  * Returns the number of pages currently in a table file.
  */
 DBStatus buffer_pool_page_count(const char *table_file, uint32_t *out_page_count);

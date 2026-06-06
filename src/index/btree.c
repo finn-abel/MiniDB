@@ -665,6 +665,11 @@ DBStatus btree_search(BTree *tree, int32_t key, RID *out_rid) {
 
     uint32_t page_id = BTREE_ROOT_PAGE_ID;
 
+    /*
+     * This is deliberately a simple primary-key maintenance delete: descend to
+     * the leaf, remove the key, and leave internal separators/rebalancing alone.
+     * Search remains correct because separators are routing hints to leaves.
+     */
     while (true) {
         uint8_t *page = NULL;
         DBStatus status = buffer_pool_fetch_page(tree->file_path, page_id, &page);
@@ -736,6 +741,77 @@ DBStatus btree_insert(BTree *tree, int32_t key, RID rid) {
 
     // A root split is the only split that cannot bubble to a parent.
     return btree_create_new_root(tree, &split);
+}
+
+DBStatus btree_delete(BTree *tree, int32_t key) {
+    if (!btree_is_open(tree)) {
+        return DB_ERROR;
+    }
+
+    uint32_t page_id = BTREE_ROOT_PAGE_ID;
+
+    while (true) {
+        uint8_t *page = NULL;
+        DBStatus status = buffer_pool_fetch_page(tree->file_path, page_id, &page);
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        uint8_t node_type = btree_read_u8(page, BTREE_NODE_TYPE_OFFSET);
+
+        if (node_type == PAGE_TYPE_BTREE_INTERNAL) {
+            uint16_t child_index = btree_internal_child_index(page, key);
+            uint32_t child_page_id = btree_internal_child(page, child_index);
+
+            status = buffer_pool_unpin_page(tree->file_path, page_id, false);
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            page_id = child_page_id;
+            continue;
+        }
+
+        if (node_type != PAGE_TYPE_BTREE_LEAF) {
+            buffer_pool_unpin_page(tree->file_path, page_id, false);
+            return DB_ERROR;
+        }
+
+        uint16_t count = btree_node_key_count(page);
+        uint16_t position = btree_leaf_lower_bound(page, key);
+
+        if (position >= count || btree_leaf_key(page, position) != key) {
+            buffer_pool_unpin_page(tree->file_path, page_id, false);
+            return DB_NOT_FOUND;
+        }
+
+        int32_t keys[BTREE_LEAF_MAX_ENTRIES];
+        RID rids[BTREE_LEAF_MAX_ENTRIES];
+        uint16_t next_count = 0;
+
+        for (uint16_t i = 0; i < count; i++) {
+            if (i == position) {
+                continue;
+            }
+
+            keys[next_count] = btree_leaf_key(page, i);
+            rids[next_count] = btree_leaf_rid(page, i);
+            next_count++;
+        }
+
+        uint32_t next_leaf = btree_read_u32(page, BTREE_NEXT_LEAF_OFFSET);
+        btree_write_leaf_entries(page, keys, rids, next_count, next_leaf);
+
+        status = buffer_pool_unpin_page(tree->file_path, page_id, true);
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        return buffer_pool_flush_page(tree->file_path, page_id);
+    }
 }
 
 DBStatus btree_split_leaf(
