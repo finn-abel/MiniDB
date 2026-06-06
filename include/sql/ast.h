@@ -19,6 +19,7 @@ typedef enum {
     STATEMENT_INSERT,
     STATEMENT_SELECT,
     STATEMENT_DELETE,
+    STATEMENT_UPDATE,
     STATEMENT_META_COMMAND
 } StatementType;
 
@@ -66,6 +67,20 @@ typedef struct {
 } DeleteStatement;
 
 /*
+ * UPDATE table_name SET column = value [WHERE condition]
+ *
+ * The parser stores one assignment and one optional WHERE condition for now.
+ */
+typedef struct {
+    char table_name[MAX_TABLE_NAME];
+    char set_column[MAX_COLUMN_NAME];
+    Value set_value;
+    bool has_set;
+    bool has_where;
+    WhereCondition where;
+} UpdateStatement;
+
+/*
  * Meta commands are shell-level commands such as .help and .exit.
  * They are represented here so parser output can use one statement wrapper.
  */
@@ -87,6 +102,7 @@ typedef struct {
         InsertStatement insert;
         SelectStatement select;
         DeleteStatement delete_statement;
+        UpdateStatement update;
         MetaCommandStatement meta_command;
     };
 } Statement;
@@ -139,6 +155,20 @@ DBStatus ast_select_set_where(
 DBStatus ast_delete_init(DeleteStatement *statement, const char *table_name);
 DBStatus ast_delete_set_where(
     DeleteStatement *statement,
+    const WhereCondition *condition
+);
+
+/*
+ * UPDATE helpers build the target table, assignment, and optional WHERE.
+ */
+DBStatus ast_update_init(UpdateStatement *statement, const char *table_name);
+DBStatus ast_update_set_assignment(
+    UpdateStatement *statement,
+    const char *column_name,
+    const Value *value
+);
+DBStatus ast_update_set_where(
+    UpdateStatement *statement,
     const WhereCondition *condition
 );
 

@@ -27,6 +27,13 @@ DBStatus record_insert(const char *table_file, Row *row, RID *out_rid);
 DBStatus record_get(const char *table_file, RID rid, Row *out_row);
 
 /*
+ * Updates a row at an existing RID.
+ * If the new bytes no longer fit in the old slot, the old row is deleted and
+ * the new row is inserted elsewhere. out_rid stores the final row location.
+ */
+DBStatus record_update(const char *table_file, RID rid, Row *row, RID *out_rid);
+
+/*
  * Deletes a row from a table file using its RID.
  * This marks the page slot as deleted.
  * It does not compact the page or reclaim row bytes yet.

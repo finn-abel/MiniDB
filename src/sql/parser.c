@@ -627,6 +627,107 @@ static DBStatus parser_parse_delete(Parser *parser, Statement *out_statement) {
 }
 
 /*
+ * UPDATE grammar:
+ *   UPDATE identifier SET identifier = literal [WHERE condition];
+ */
+static DBStatus parser_parse_update(Parser *parser, Statement *out_statement) {
+    char table_name[MAX_TABLE_NAME];
+    char column_name[MAX_COLUMN_NAME];
+    Value value;
+    WhereCondition condition;
+    bool condition_initialized = false;
+    DBStatus status;
+
+    status = ast_statement_init(out_statement, STATEMENT_UPDATE);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_UPDATE);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect_identifier(parser, table_name, sizeof(table_name));
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = ast_update_init(&out_statement->update, table_name);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_SET);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect_identifier(parser, column_name, sizeof(column_name));
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_expect(parser, TOKEN_EQUAL);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = parser_parse_literal(parser, &value);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = ast_update_set_assignment(&out_statement->update, column_name, &value);
+    value_free(&value);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    if (parser->current.type == TOKEN_WHERE) {
+        status = parser_advance(parser);
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        status = parser_parse_where_condition(parser, &condition);
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        condition_initialized = true;
+        /*
+         * ast_update_set_where owns its own copy, so the temporary condition
+         * can be freed immediately after the assignment.
+         */
+        status = ast_update_set_where(&out_statement->update, &condition);
+        ast_where_free(&condition);
+        condition_initialized = false;
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    if (condition_initialized) {
+        ast_where_free(&condition);
+    }
+
+    return parser_finish_statement(parser);
+}
+
+/*
  * Meta commands are shell commands, not SQL.
  *
  * They skip the lexer so commands like ".schema users" can be preserved as one
@@ -701,6 +802,9 @@ DBStatus parser_parse(const char *input, Statement *out_statement) {
             break;
         case TOKEN_DELETE:
             status = parser_parse_delete(&parser, out_statement);
+            break;
+        case TOKEN_UPDATE:
+            status = parser_parse_update(&parser, out_statement);
             break;
         default:
             status = DB_PARSE_ERROR;

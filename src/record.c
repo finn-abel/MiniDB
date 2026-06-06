@@ -285,6 +285,95 @@ DBStatus record_get(const char *table_file, RID rid, Row *out_row) {
     return unpin_status;
 }
 
+DBStatus record_update(const char *table_file, RID rid, Row *row, RID *out_rid) {
+    if (table_file == NULL || row == NULL || out_rid == NULL) {
+        return DB_ERROR;
+    }
+
+    uint8_t *row_bytes = NULL;
+    uint32_t row_len = 0;
+
+    DBStatus status = row_serialize(row, &row_bytes, &row_len);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    uint8_t *page_buffer = NULL;
+
+    status = buffer_pool_fetch_page(table_file, rid.page_id, &page_buffer);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
+
+    /*
+     * Try the cheap path first: overwrite the existing slot when the new
+     * serialized row is no larger than the old slot.
+     */
+    status = page_update(page_buffer, rid.slot_id, row_bytes, row_len);
+
+    if (status == DB_OK) {
+        status = free_space_update(
+            table_file,
+            rid.page_id,
+            page_insertable_space(page_buffer)
+        );
+
+        if (status != DB_OK) {
+            buffer_pool_unpin_page(table_file, rid.page_id, false);
+            free(row_bytes);
+            return status;
+        }
+
+        status = buffer_pool_unpin_page(table_file, rid.page_id, true);
+
+        if (status != DB_OK) {
+            free(row_bytes);
+            return status;
+        }
+
+        status = buffer_pool_flush_page(table_file, rid.page_id);
+
+        if (status != DB_OK) {
+            free(row_bytes);
+            return status;
+        }
+
+        *out_rid = rid;
+        free(row_bytes);
+        return DB_OK;
+    }
+
+    /*
+     * Missing or corrupted slots are real failures. DB_FULL means the row grew
+     * too large for this slot and should be rewritten through insert.
+     */
+    if (status != DB_FULL) {
+        buffer_pool_unpin_page(table_file, rid.page_id, false);
+        free(row_bytes);
+        return status;
+    }
+
+    status = buffer_pool_unpin_page(table_file, rid.page_id, false);
+
+    if (status != DB_OK) {
+        free(row_bytes);
+        return status;
+    }
+
+    free(row_bytes);
+
+    status = record_delete(table_file, rid);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return record_insert(table_file, row, out_rid);
+}
+
 DBStatus record_delete(const char *table_file, RID rid) {
     if (table_file == NULL) {
         return DB_ERROR;

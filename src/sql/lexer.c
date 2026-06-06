@@ -119,6 +119,14 @@ static TokenType lexer_keyword_type(const char *text, uint32_t length) {
         return TOKEN_DELETE;
     }
 
+    if (lexer_text_equals_keyword(text, length, "UPDATE")) {
+        return TOKEN_UPDATE;
+    }
+
+    if (lexer_text_equals_keyword(text, length, "SET")) {
+        return TOKEN_SET;
+    }
+
     return TOKEN_IDENTIFIER;
 }
 

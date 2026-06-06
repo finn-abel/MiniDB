@@ -353,6 +353,86 @@ static void test_binder_rejects_delete_bad_where_type(void) {
     cleanup_db_dir(path);
 }
 
+static void test_binder_bind_update_with_where(void) {
+    const char *path = "test_binder_update";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    parse_statement("UPDATE users SET age = 21 WHERE id = 1;", &statement);
+
+    assert(binder_bind(&db, &statement, &bound) == DB_OK);
+
+    assert(bound.statement.type == STATEMENT_UPDATE);
+    assert(bound.has_table_schema == true);
+    assert(strcmp(bound.statement.update.table_name, "users") == 0);
+    assert(strcmp(bound.statement.update.set_column, "age") == 0);
+    assert(bound.statement.update.set_value.type == VALUE_INT);
+    assert(bound.statement.update.has_where == true);
+
+    binder_bound_statement_free(&bound);
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_binder_rejects_update_bad_set_column(void) {
+    const char *path = "test_binder_update_bad_set_column";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    parse_statement("UPDATE users SET email = \"x\" WHERE id = 1;", &statement);
+
+    assert(binder_bind(&db, &statement, &bound) == DB_NOT_FOUND);
+
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_binder_rejects_update_bad_set_type(void) {
+    const char *path = "test_binder_update_bad_set_type";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    parse_statement("UPDATE users SET age = \"old\" WHERE id = 1;", &statement);
+
+    assert(binder_bind(&db, &statement, &bound) == DB_TYPE_ERROR);
+
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_binder_rejects_update_bad_where_type(void) {
+    const char *path = "test_binder_update_bad_where_type";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    parse_statement("UPDATE users SET age = 21 WHERE id = \"one\";", &statement);
+
+    assert(binder_bind(&db, &statement, &bound) == DB_TYPE_ERROR);
+
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
 static void test_binder_bind_meta_command_without_db(void) {
     Statement statement;
     BoundStatement bound;
@@ -403,6 +483,10 @@ int main(void) {
     test_binder_bind_delete_with_where();
     test_binder_rejects_delete_bad_where_column();
     test_binder_rejects_delete_bad_where_type();
+    test_binder_bind_update_with_where();
+    test_binder_rejects_update_bad_set_column();
+    test_binder_rejects_update_bad_set_type();
+    test_binder_rejects_update_bad_where_type();
     test_binder_bind_meta_command_without_db();
     test_binder_rejects_null_inputs();
 

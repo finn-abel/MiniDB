@@ -35,6 +35,35 @@ typedef struct {
 } DeleteContext;
 
 /*
+ * UPDATE scan callbacks need the opened table so they can validate and write
+ * the replacement row at the RID provided by the scan.
+ */
+typedef struct {
+    Table *table;
+    const UpdatePlan *plan;
+} UpdateContext;
+
+/*
+ * Execution rows and plans own their values independently.
+ */
+static DBStatus executor_copy_value(Value *dest, const Value *source) {
+    if (dest == NULL || source == NULL) {
+        return DB_ERROR;
+    }
+
+    if (source->type == VALUE_INT) {
+        *dest = value_int(source->int_value);
+        return DB_OK;
+    }
+
+    if (source->type == VALUE_TEXT) {
+        return value_text(dest, source->text_value);
+    }
+
+    return DB_TYPE_ERROR;
+}
+
+/*
  * Prints one value in shell result format.
  * Text values are printed without quotes for query output.
  */
@@ -217,6 +246,117 @@ static DBStatus executor_delete_callback(const Row *row, RID rid, void *context)
     return record_delete(delete_context->table->file_path, rid);
 }
 
+/*
+ * Builds a row with one column replaced by the UPDATE assignment value.
+ */
+static DBStatus executor_build_updated_row(
+    const Row *source,
+    uint16_t set_column_index,
+    const Value *set_value,
+    Row *out_row
+) {
+    if (source == NULL || set_value == NULL || out_row == NULL) {
+        return DB_ERROR;
+    }
+
+    DBStatus status = row_create(out_row, source->value_count);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    for (uint16_t i = 0; i < source->value_count; i++) {
+        const Value *value = (i == set_column_index) ?
+            set_value :
+            row_get_value_const(source, i);
+
+        if (value == NULL) {
+            row_free(out_row);
+            return DB_ERROR;
+        }
+
+        status = executor_copy_value(&out_row->values[i], value);
+
+        if (status != DB_OK) {
+            row_free(out_row);
+            return status;
+        }
+    }
+
+    return DB_OK;
+}
+
+/*
+ * Callback used by table_scan for UPDATE.
+ * Matching rows are rewritten through record_update.
+ */
+static DBStatus executor_update_callback(const Row *row, RID rid, void *context) {
+    UpdateContext *update_context = context;
+    bool matches = true;
+
+    if (update_context == NULL || row == NULL) {
+        return DB_ERROR;
+    }
+
+    if (update_context->plan->has_condition) {
+        DBStatus status = row_matches_condition(
+            row,
+            &update_context->table->schema,
+            &update_context->plan->condition,
+            &matches
+        );
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    if (!matches) {
+        return DB_OK;
+    }
+
+    uint16_t set_column_index = 0;
+    DBStatus status = schema_get_column_index(
+        &update_context->table->schema,
+        update_context->plan->set_column,
+        &set_column_index
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    Row updated_row;
+
+    status = executor_build_updated_row(
+        row,
+        set_column_index,
+        &update_context->plan->set_value,
+        &updated_row
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = schema_validate_row(&update_context->table->schema, &updated_row);
+
+    if (status == DB_OK) {
+        RID updated_rid;
+
+        status = record_update(
+            update_context->table->file_path,
+            rid,
+            &updated_row,
+            &updated_rid
+        );
+    }
+
+    row_free(&updated_row);
+
+    return status;
+}
+
 static DBStatus executor_execute_create_table(DB *db, const CreateTablePlan *plan) {
     /*
      * catalog_create_table persists metadata and creates the table file.
@@ -317,6 +457,33 @@ static DBStatus executor_execute_delete(DB *db, const DeletePlan *plan) {
     return close_status;
 }
 
+static DBStatus executor_execute_update(DB *db, const UpdatePlan *plan) {
+    Table table;
+    UpdateContext context;
+
+    DBStatus status = table_open(&table, db, plan->table_name);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    context.table = &table;
+    context.plan = plan;
+
+    /*
+     * UPDATE is implemented as table scan plus conditional record_update.
+     */
+    status = table_scan(&table, executor_update_callback, &context);
+
+    DBStatus close_status = table_close(&table);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    return close_status;
+}
+
 static DBStatus executor_execute_meta_command(
     DB *db,
     const MetaCommandPlan *plan,
@@ -383,6 +550,8 @@ DBStatus executor_execute(DB *db, const Plan *plan, FILE *out) {
             return executor_execute_select(db, &plan->select, out);
         case PLAN_DELETE:
             return executor_execute_delete(db, &plan->delete_plan);
+        case PLAN_UPDATE:
+            return executor_execute_update(db, &plan->update);
         case PLAN_META_COMMAND:
             return executor_execute_meta_command(db, &plan->meta_command, out);
         default:

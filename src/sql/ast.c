@@ -96,6 +96,16 @@ void ast_statement_free(Statement *statement) {
         ast_where_free(&statement->delete_statement.where);
     }
 
+    if (statement->type == STATEMENT_UPDATE) {
+        if (statement->update.has_set) {
+            value_free(&statement->update.set_value);
+        }
+
+        if (statement->update.has_where) {
+            ast_where_free(&statement->update.where);
+        }
+    }
+
     memset(statement, 0, sizeof(Statement));
 }
 
@@ -261,6 +271,90 @@ DBStatus ast_delete_init(DeleteStatement *statement, const char *table_name) {
 
 DBStatus ast_delete_set_where(
     DeleteStatement *statement,
+    const WhereCondition *condition
+) {
+    if (statement == NULL || condition == NULL) {
+        return DB_ERROR;
+    }
+
+    if (statement->has_where) {
+        /*
+         * Replacing a WHERE clause must release the old condition's Value
+         * before copying the new one.
+         */
+        ast_where_free(&statement->where);
+    }
+
+    DBStatus status = ast_where_init(
+        &statement->where,
+        condition->column_name,
+        condition->operator_type,
+        &condition->value
+    );
+
+    if (status != DB_OK) {
+        statement->has_where = false;
+        return status;
+    }
+
+    statement->has_where = true;
+
+    return DB_OK;
+}
+
+DBStatus ast_update_init(UpdateStatement *statement, const char *table_name) {
+    if (statement == NULL) {
+        return DB_ERROR;
+    }
+
+    memset(statement, 0, sizeof(UpdateStatement));
+
+    return ast_copy_name(statement->table_name, sizeof(statement->table_name), table_name);
+}
+
+DBStatus ast_update_set_assignment(
+    UpdateStatement *statement,
+    const char *column_name,
+    const Value *value
+) {
+    if (statement == NULL || column_name == NULL || value == NULL) {
+        return DB_ERROR;
+    }
+
+    if (statement->has_set) {
+        /*
+         * UPDATE currently has one SET assignment. Replacing it must release
+         * any text value owned by the old assignment.
+         */
+        value_free(&statement->set_value);
+    }
+
+    DBStatus status = ast_copy_name(
+        statement->set_column,
+        sizeof(statement->set_column),
+        column_name
+    );
+
+    if (status != DB_OK) {
+        statement->has_set = false;
+        return status;
+    }
+
+    status = ast_copy_value(&statement->set_value, value);
+
+    if (status != DB_OK) {
+        statement->set_column[0] = '\0';
+        statement->has_set = false;
+        return status;
+    }
+
+    statement->has_set = true;
+
+    return DB_OK;
+}
+
+DBStatus ast_update_set_where(
+    UpdateStatement *statement,
     const WhereCondition *condition
 ) {
     if (statement == NULL || condition == NULL) {

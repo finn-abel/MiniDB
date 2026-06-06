@@ -120,6 +120,40 @@ static void test_parser_delete_without_where(void) {
     ast_statement_free(&statement);
 }
 
+static void test_parser_update_with_where(void) {
+    Statement statement;
+
+    assert(parser_parse("UPDATE users SET age = 21 WHERE id = 1;", &statement) == DB_OK);
+
+    assert(statement.type == STATEMENT_UPDATE);
+    assert(strcmp(statement.update.table_name, "users") == 0);
+    assert(strcmp(statement.update.set_column, "age") == 0);
+    assert(statement.update.set_value.type == VALUE_INT);
+    assert(statement.update.set_value.int_value == 21);
+    assert(statement.update.has_where == true);
+    assert(strcmp(statement.update.where.column_name, "id") == 0);
+    assert(statement.update.where.operator_type == SQL_OPERATOR_EQUAL);
+    assert(statement.update.where.value.type == VALUE_INT);
+    assert(statement.update.where.value.int_value == 1);
+
+    ast_statement_free(&statement);
+}
+
+static void test_parser_update_without_where(void) {
+    Statement statement;
+
+    assert(parser_parse("UPDATE users SET name = \"Finley\";", &statement) == DB_OK);
+
+    assert(statement.type == STATEMENT_UPDATE);
+    assert(strcmp(statement.update.table_name, "users") == 0);
+    assert(strcmp(statement.update.set_column, "name") == 0);
+    assert(statement.update.set_value.type == VALUE_TEXT);
+    assert(strcmp(statement.update.set_value.text_value, "Finley") == 0);
+    assert(statement.update.has_where == false);
+
+    ast_statement_free(&statement);
+}
+
 static void test_parser_meta_commands(void) {
     Statement statement;
 
@@ -199,6 +233,13 @@ static void test_parser_rejects_bad_where(void) {
     assert(parser_parse("SELECT * FROM users WHERE id;", &statement) == DB_PARSE_ERROR);
 }
 
+static void test_parser_rejects_bad_update(void) {
+    Statement statement;
+
+    assert(parser_parse("UPDATE users age = 21 WHERE id = 1;", &statement) == DB_PARSE_ERROR);
+    assert(parser_parse("UPDATE users SET age WHERE id = 1;", &statement) == DB_PARSE_ERROR);
+}
+
 int main(void) {
     test_parser_create_table();
     test_parser_insert();
@@ -207,6 +248,8 @@ int main(void) {
     test_parser_select_where_string();
     test_parser_delete_with_where();
     test_parser_delete_without_where();
+    test_parser_update_with_where();
+    test_parser_update_without_where();
     test_parser_meta_commands();
     test_parser_rejects_null_inputs();
     test_parser_rejects_unknown_meta_command();
@@ -217,6 +260,7 @@ int main(void) {
     test_parser_rejects_empty_insert_values();
     test_parser_rejects_select_missing_from();
     test_parser_rejects_bad_where();
+    test_parser_rejects_bad_update();
 
     printf("All parser tests passed.\n");
 

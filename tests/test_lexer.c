@@ -101,6 +101,25 @@ static void test_lexer_delete_statement(void) {
     assert_next_token(&lexer, TOKEN_EOF, "");
 }
 
+static void test_lexer_update_statement(void) {
+    Lexer lexer;
+
+    assert(lexer_init(&lexer, "UPDATE users SET age = 21 WHERE id = 1;") == DB_OK);
+
+    assert_next_token(&lexer, TOKEN_UPDATE, "UPDATE");
+    assert_next_token(&lexer, TOKEN_IDENTIFIER, "users");
+    assert_next_token(&lexer, TOKEN_SET, "SET");
+    assert_next_token(&lexer, TOKEN_IDENTIFIER, "age");
+    assert_next_token(&lexer, TOKEN_EQUAL, "=");
+    assert_next_token(&lexer, TOKEN_INT_LITERAL, "21");
+    assert_next_token(&lexer, TOKEN_WHERE, "WHERE");
+    assert_next_token(&lexer, TOKEN_IDENTIFIER, "id");
+    assert_next_token(&lexer, TOKEN_EQUAL, "=");
+    assert_next_token(&lexer, TOKEN_INT_LITERAL, "1");
+    assert_next_token(&lexer, TOKEN_SEMICOLON, ";");
+    assert_next_token(&lexer, TOKEN_EOF, "");
+}
+
 static void test_lexer_comparison_symbols(void) {
     Lexer lexer;
 
@@ -177,6 +196,7 @@ int main(void) {
     test_lexer_create_statement();
     test_lexer_select_statement();
     test_lexer_delete_statement();
+    test_lexer_update_statement();
     test_lexer_comparison_symbols();
     test_lexer_identifier_with_underscore();
     test_lexer_empty_string_literal();

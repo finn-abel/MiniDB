@@ -217,6 +217,62 @@ DBStatus page_get(
     return DB_OK;
 }
 
+DBStatus page_update(
+    uint8_t *page_bytes,
+    uint16_t slot_id,
+    const uint8_t *row_bytes,
+    uint32_t row_len
+) {
+    if (
+        page_bytes == NULL ||
+        row_bytes == NULL ||
+        row_len == 0 ||
+        row_len > UINT16_MAX
+    ) {
+        return DB_ERROR;
+    }
+
+    PageHeader header;
+    page_read_header(page_bytes, &header);
+
+    if (header.page_type != PAGE_TYPE_DATA) {
+        return DB_ERROR;
+    }
+
+    if (slot_id >= header.slot_count) {
+        return DB_NOT_FOUND;
+    }
+
+    PageSlot slot;
+    page_read_slot(page_bytes, slot_id, &slot);
+
+    if (slot.flags != PAGE_SLOT_ACTIVE) {
+        return DB_NOT_FOUND;
+    }
+
+    if (
+        slot.offset >= PAGE_SIZE ||
+        slot.length == 0 ||
+        slot.offset + slot.length > PAGE_SIZE
+    ) {
+        return DB_ERROR;
+    }
+
+    /*
+     * In-place updates cannot grow past the existing slot allocation.
+     * Larger rows are handled by the record layer as delete plus insert.
+     */
+    if (row_len > slot.length) {
+        return DB_FULL;
+    }
+
+    memcpy(page_bytes + slot.offset, row_bytes, row_len);
+    slot.length = (uint16_t)row_len;
+    page_write_slot(page_bytes, slot_id, &slot);
+
+    return DB_OK;
+}
+
 DBStatus page_delete(uint8_t *page_bytes, uint16_t slot_id) {
     if (page_bytes == NULL) {
         return DB_ERROR;

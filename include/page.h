@@ -77,6 +77,17 @@ DBStatus page_get(
 );
 
 /*
+ * Overwrites an active slot in place.
+ * The new row must fit within the slot's current byte length.
+ */
+DBStatus page_update(
+    uint8_t *page_bytes,
+    uint16_t slot_id,
+    const uint8_t *row_bytes,
+    uint32_t row_len
+);
+
+/*
  * Marks a slot as deleted.
  * This does not compact the page or reclaim the row bytes yet.
  * Later, a compaction step can be added if needed.

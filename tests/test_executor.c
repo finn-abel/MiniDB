@@ -177,6 +177,60 @@ static void test_executor_delete_without_condition(void) {
     cleanup_db_dir(path);
 }
 
+static void test_executor_update_with_condition(void) {
+    const char *path = "test_executor_update";
+
+    DB db;
+    FILE *out;
+
+    setup_db(&db, path);
+    execute_sql(&db, "CREATE TABLE users (id INT, name TEXT, age INT);", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (1, \"Finn\", 20);", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (2, \"Alex\", 17);", stdout);
+    execute_sql(&db, "UPDATE users SET age = 21 WHERE id = 1;", stdout);
+
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT * FROM users;", out);
+
+    rewind(out);
+    assert_next_line(out, "1 | Finn | 21\n");
+    assert_next_line(out, "2 | Alex | 17\n");
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
+static void test_executor_update_without_condition(void) {
+    const char *path = "test_executor_update_all";
+
+    DB db;
+    FILE *out;
+
+    setup_db(&db, path);
+    execute_sql(&db, "CREATE TABLE users (id INT, name TEXT, age INT);", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (1, \"Finn\", 20);", stdout);
+    execute_sql(&db, "INSERT INTO users VALUES (2, \"Alex\", 17);", stdout);
+    execute_sql(&db, "UPDATE users SET name = \"Updated\";", stdout);
+
+    out = tmpfile();
+    assert(out != NULL);
+
+    execute_sql(&db, "SELECT * FROM users;", out);
+
+    rewind(out);
+    assert_next_line(out, "1 | Updated | 20\n");
+    assert_next_line(out, "2 | Updated | 17\n");
+    assert(fgetc(out) == EOF);
+    assert(fclose(out) == 0);
+
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
 static void test_executor_meta_commands(void) {
     const char *path = "test_executor_meta";
 
@@ -238,6 +292,8 @@ int main(void) {
     test_executor_select_with_filter_and_project();
     test_executor_delete_with_condition();
     test_executor_delete_without_condition();
+    test_executor_update_with_condition();
+    test_executor_update_without_condition();
     test_executor_meta_commands();
     test_executor_rejects_null_inputs();
 

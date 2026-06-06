@@ -236,6 +236,64 @@ static DBStatus planner_build_delete_plan(
     return DB_OK;
 }
 
+static DBStatus planner_build_update_plan(
+    const BoundStatement *bound,
+    Plan *out_plan
+) {
+    const UpdateStatement *update = &bound->statement.update;
+
+    /*
+     * UPDATE uses the same table-scan shape as DELETE, plus one assignment
+     * copied from the bound AST.
+     */
+    DBStatus status = plan_init(out_plan, PLAN_UPDATE);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = planner_copy_name(
+        out_plan->update.table_name,
+        sizeof(out_plan->update.table_name),
+        update->table_name
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = planner_copy_name(
+        out_plan->update.set_column,
+        sizeof(out_plan->update.set_column),
+        update->set_column
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = planner_copy_value(&out_plan->update.set_value, &update->set_value);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    if (update->has_where) {
+        status = planner_copy_where(
+            &out_plan->update.condition,
+            &update->where
+        );
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        out_plan->update.has_condition = true;
+    }
+
+    return DB_OK;
+}
+
 static DBStatus planner_build_meta_command_plan(
     const BoundStatement *bound,
     Plan *out_plan
@@ -279,6 +337,9 @@ DBStatus planner_create_plan(const BoundStatement *bound, Plan *out_plan) {
             break;
         case STATEMENT_DELETE:
             status = planner_build_delete_plan(bound, out_plan);
+            break;
+        case STATEMENT_UPDATE:
+            status = planner_build_update_plan(bound, out_plan);
             break;
         case STATEMENT_META_COMMAND:
             status = planner_build_meta_command_plan(bound, out_plan);

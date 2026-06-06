@@ -223,6 +223,38 @@ static void test_planner_delete_without_condition_plan(void) {
     cleanup_db_dir(path);
 }
 
+static void test_planner_update_plan(void) {
+    const char *path = "test_planner_update";
+
+    DB db;
+    Statement statement;
+    BoundStatement bound;
+    Plan plan;
+
+    setup_db(&db, path);
+    add_users_table(&db);
+    bind_sql(&db, "UPDATE users SET age = 21 WHERE id = 1;", &statement, &bound);
+
+    assert(planner_create_plan(&bound, &plan) == DB_OK);
+
+    assert(plan.type == PLAN_UPDATE);
+    assert(strcmp(plan.update.table_name, "users") == 0);
+    assert(strcmp(plan.update.set_column, "age") == 0);
+    assert(plan.update.set_value.type == VALUE_INT);
+    assert(plan.update.set_value.int_value == 21);
+    assert(plan.update.has_condition == true);
+    assert(strcmp(plan.update.condition.column_name, "id") == 0);
+    assert(plan.update.condition.operator_type == SQL_OPERATOR_EQUAL);
+    assert(plan.update.condition.value.type == VALUE_INT);
+    assert(plan.update.condition.value.int_value == 1);
+
+    plan_free(&plan);
+    binder_bound_statement_free(&bound);
+    ast_statement_free(&statement);
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
 static void test_planner_meta_command_plan(void) {
     Statement statement;
     BoundStatement bound;
@@ -256,6 +288,7 @@ int main(void) {
     test_planner_select_filter_project_plan();
     test_planner_delete_plan();
     test_planner_delete_without_condition_plan();
+    test_planner_update_plan();
     test_planner_meta_command_plan();
     test_planner_rejects_null_inputs();
 

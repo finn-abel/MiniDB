@@ -273,6 +273,69 @@ static void test_record_delete_already_deleted_row(void) {
     cleanup_file(path);
 }
 
+static void test_record_update_in_place(void) {
+    const char *path = "test_record_update_in_place.db";
+    cleanup_file(path);
+
+    Row original = make_test_row(1, "Finn", 20);
+    Row updated = make_test_row(1, "Finn", 21);
+    RID rid;
+    RID updated_rid;
+
+    assert(record_insert(path, &original, &rid) == DB_OK);
+    assert(record_update(path, rid, &updated, &updated_rid) == DB_OK);
+
+    assert(updated_rid.page_id == rid.page_id);
+    assert(updated_rid.slot_id == rid.slot_id);
+
+    Row copy;
+
+    assert(record_get(path, updated_rid, &copy) == DB_OK);
+    assert_test_row_matches(&copy, 1, "Finn", 21);
+
+    row_free(&original);
+    row_free(&updated);
+    row_free(&copy);
+    cleanup_file(path);
+}
+
+static void test_record_update_reinserts_larger_row(void) {
+    const char *path = "test_record_update_larger.db";
+    cleanup_file(path);
+
+    Row original = make_test_row(1, "A", 20);
+    Row updated = make_test_row(1, "A much longer name", 20);
+    RID rid;
+    RID updated_rid;
+
+    assert(record_insert(path, &original, &rid) == DB_OK);
+    assert(record_update(path, rid, &updated, &updated_rid) == DB_OK);
+
+    Row copy;
+
+    assert(record_get(path, updated_rid, &copy) == DB_OK);
+    assert_test_row_matches(&copy, 1, "A much longer name", 20);
+
+    row_free(&original);
+    row_free(&updated);
+    row_free(&copy);
+    cleanup_file(path);
+}
+
+static void test_record_update_missing_row(void) {
+    const char *path = "test_record_update_missing.db";
+    cleanup_file(path);
+
+    Row row = make_test_row(1, "Finn", 21);
+    RID rid = {0, 0};
+    RID updated_rid;
+
+    assert(record_update(path, rid, &row, &updated_rid) == DB_NOT_FOUND);
+
+    row_free(&row);
+    cleanup_file(path);
+}
+
 static void test_record_insert_reuses_deleted_slot(void) {
     const char *path = "test_record_reuse_deleted_slot.db";
     cleanup_file(path);
@@ -416,6 +479,9 @@ int main(void) {
     test_record_delete_missing_page();
     test_record_delete_missing_slot();
     test_record_delete_already_deleted_row();
+    test_record_update_in_place();
+    test_record_update_reinserts_larger_row();
+    test_record_update_missing_row();
     test_record_insert_reuses_deleted_slot();
     test_record_scan_empty_file();
     test_record_scan_counts_active_rows();

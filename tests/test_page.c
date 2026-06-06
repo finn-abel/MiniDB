@@ -161,6 +161,53 @@ static void test_page_delete_already_deleted_slot(void) {
     assert(page_delete(page, slot_id) == DB_NOT_FOUND);
 }
 
+static void test_page_update_existing_row(void) {
+    uint8_t page[PAGE_SIZE];
+
+    assert(page_init(page, 1) == DB_OK);
+
+    uint8_t row_bytes[] = {1, 2, 3, 4};
+    uint8_t updated_bytes[] = {9, 8, 7};
+    uint16_t slot_id = 0;
+
+    assert(page_insert(page, row_bytes, sizeof(row_bytes), &slot_id) == DB_OK);
+    assert(page_update(page, slot_id, updated_bytes, sizeof(updated_bytes)) == DB_OK);
+
+    uint8_t *out_ptr = NULL;
+    uint32_t out_len = 0;
+
+    assert(page_get(page, slot_id, &out_ptr, &out_len) == DB_OK);
+    assert(out_len == sizeof(updated_bytes));
+    assert(memcmp(out_ptr, updated_bytes, sizeof(updated_bytes)) == 0);
+}
+
+static void test_page_update_rejects_growth(void) {
+    uint8_t page[PAGE_SIZE];
+
+    assert(page_init(page, 1) == DB_OK);
+
+    uint8_t row_bytes[] = {1, 2, 3};
+    uint8_t updated_bytes[] = {1, 2, 3, 4};
+    uint16_t slot_id = 0;
+
+    assert(page_insert(page, row_bytes, sizeof(row_bytes), &slot_id) == DB_OK);
+    assert(page_update(page, slot_id, updated_bytes, sizeof(updated_bytes)) == DB_FULL);
+}
+
+static void test_page_update_rejects_deleted_slot(void) {
+    uint8_t page[PAGE_SIZE];
+
+    assert(page_init(page, 1) == DB_OK);
+
+    uint8_t row_bytes[] = {1, 2, 3};
+    uint8_t updated_bytes[] = {7, 8, 9};
+    uint16_t slot_id = 0;
+
+    assert(page_insert(page, row_bytes, sizeof(row_bytes), &slot_id) == DB_OK);
+    assert(page_delete(page, slot_id) == DB_OK);
+    assert(page_update(page, slot_id, updated_bytes, sizeof(updated_bytes)) == DB_NOT_FOUND);
+}
+
 static void test_page_reuses_deleted_slot(void) {
     uint8_t page[PAGE_SIZE];
 
@@ -270,6 +317,9 @@ int main(void) {
     test_page_delete_rejects_null();
     test_page_delete_missing_slot();
     test_page_delete_already_deleted_slot();
+    test_page_update_existing_row();
+    test_page_update_rejects_growth();
+    test_page_update_rejects_deleted_slot();
     test_page_reuses_deleted_slot();
     test_page_free_space_decreases_after_insert();
     test_page_free_space_null();

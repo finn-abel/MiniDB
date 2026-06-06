@@ -42,6 +42,14 @@ void plan_free(Plan *plan) {
         ast_where_free(&plan->delete_plan.condition);
     }
 
+    if (plan->type == PLAN_UPDATE) {
+        value_free(&plan->update.set_value);
+
+        if (plan->update.has_condition) {
+            ast_where_free(&plan->update.condition);
+        }
+    }
+
     /*
      * Reset after cleanup so accidental reuse behaves like an empty plan.
      */

@@ -61,6 +61,8 @@ static const char *statement_table_name(const Statement *statement) {
             return statement->select.table_name;
         case STATEMENT_DELETE:
             return statement->delete_statement.table_name;
+        case STATEMENT_UPDATE:
+            return statement->update.table_name;
         case STATEMENT_META_COMMAND:
         default:
             return NULL;
@@ -136,6 +138,49 @@ static bool set_where_type_error(
     return true;
 }
 
+static bool set_update_type_error(
+    const DB *db,
+    const UpdateStatement *statement,
+    DBError *error
+) {
+    Schema schema;
+    ValueType column_type;
+
+    /*
+     * UPDATE type errors can come from either the SET assignment or WHERE.
+     * Prefer naming the SET column when that value is the mismatch.
+     */
+    if (catalog_get_schema(db, statement->table_name, &schema) != DB_OK) {
+        return false;
+    }
+
+    if (
+        schema_get_column_type(&schema, statement->set_column, &column_type) == DB_OK &&
+        statement->set_value.type != column_type
+    ) {
+        db_error_set(
+            error,
+            DB_TYPE_ERROR,
+            "column '%s' expects %s, got %s.",
+            statement->set_column,
+            cli_value_type_name(column_type),
+            cli_value_type_name(statement->set_value.type)
+        );
+        return true;
+    }
+
+    if (statement->has_where) {
+        return set_where_type_error(
+            db,
+            statement->table_name,
+            &statement->where,
+            error
+        );
+    }
+
+    return false;
+}
+
 /*
  * Adds context to status-only failures when the CLI has enough parsed data.
  * Engine layers still return DBStatus; the shell turns that into readable text.
@@ -198,6 +243,15 @@ static void set_statement_error(
     if (
         status == DB_TYPE_ERROR &&
         statement != NULL &&
+        statement->type == STATEMENT_UPDATE &&
+        set_update_type_error(db, &statement->update, error)
+    ) {
+        return;
+    }
+
+    if (
+        status == DB_TYPE_ERROR &&
+        statement != NULL &&
         statement->type == STATEMENT_SELECT &&
         statement->select.has_where &&
         set_where_type_error(db, table_name, &statement->select.where, error)
@@ -238,6 +292,8 @@ static void print_success_message(const Plan *plan) {
         printf("1 row inserted.\n");
     } else if (plan->type == PLAN_DELETE) {
         printf("Rows deleted.\n");
+    } else if (plan->type == PLAN_UPDATE) {
+        printf("Rows updated.\n");
     }
 }
 

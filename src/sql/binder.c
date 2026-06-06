@@ -124,6 +124,37 @@ static DBStatus binder_copy_statement(
             }
 
             return status;
+        case STATEMENT_UPDATE:
+            /*
+             * UPDATE owns a SET value and may also own a WHERE value.
+             */
+            status = ast_update_init(
+                &dest->update,
+                source->update.table_name
+            );
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            status = ast_update_set_assignment(
+                &dest->update,
+                source->update.set_column,
+                &source->update.set_value
+            );
+
+            if (status != DB_OK) {
+                return status;
+            }
+
+            if (source->update.has_where) {
+                status = ast_update_set_where(
+                    &dest->update,
+                    &source->update.where
+                );
+            }
+
+            return status;
         case STATEMENT_META_COMMAND:
             return ast_meta_command_init(
                 &dest->meta_command,
@@ -354,6 +385,57 @@ static DBStatus binder_bind_delete(
     return DB_OK;
 }
 
+static DBStatus binder_bind_update(
+    const DB *db,
+    const Statement *statement,
+    BoundStatement *out_bound
+) {
+    ValueType column_type;
+
+    /*
+     * UPDATE needs table existence, a valid SET column/value pair, and WHERE
+     * validation when a condition was parsed.
+     */
+    DBStatus status = catalog_get_schema(
+        db,
+        statement->update.table_name,
+        &out_bound->table_schema
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    status = schema_get_column_type(
+        &out_bound->table_schema,
+        statement->update.set_column,
+        &column_type
+    );
+
+    if (status != DB_OK) {
+        return status;
+    }
+
+    if (statement->update.set_value.type != column_type) {
+        return DB_TYPE_ERROR;
+    }
+
+    if (statement->update.has_where) {
+        status = binder_check_where(
+            &out_bound->table_schema,
+            &statement->update.where
+        );
+
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+
+    out_bound->has_table_schema = true;
+
+    return DB_OK;
+}
+
 DBStatus binder_bind(
     const DB *db,
     const Statement *statement,
@@ -406,6 +488,9 @@ DBStatus binder_bind(
             break;
         case STATEMENT_DELETE:
             status = binder_bind_delete(db, statement, out_bound);
+            break;
+        case STATEMENT_UPDATE:
+            status = binder_bind_update(db, statement, out_bound);
             break;
         default:
             status = DB_ERROR;

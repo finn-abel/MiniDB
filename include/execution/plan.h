@@ -20,6 +20,7 @@ typedef enum {
     PLAN_INSERT,
     PLAN_SELECT,
     PLAN_DELETE,
+    PLAN_UPDATE,
     PLAN_META_COMMAND
 } PlanType;
 
@@ -83,6 +84,18 @@ typedef struct {
 } DeletePlan;
 
 /*
+ * UpdatePlan scans a table, applies one optional condition, and writes one
+ * column assignment to every matching row.
+ */
+typedef struct {
+    char table_name[MAX_TABLE_NAME];
+    char set_column[MAX_COLUMN_NAME];
+    Value set_value;
+    bool has_condition;
+    WhereCondition condition;
+} UpdatePlan;
+
+/*
  * CreateTablePlan carries the already-validated schema from the binder.
  */
 typedef struct {
@@ -108,6 +121,7 @@ typedef struct {
         InsertPlan insert;
         SelectPlan select;
         DeletePlan delete_plan;
+        UpdatePlan update;
         MetaCommandPlan meta_command;
     };
 } Plan;
