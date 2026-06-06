@@ -56,9 +56,6 @@ typedef struct {
  *   TableScan
  *     optional Filter
  *     optional Project
- *
- * The fields are stored inline instead of as heap-allocated plan nodes because
- * Step 17 only needs a simple fixed-shape planner.
  */
 typedef struct {
     TableScanPlan scan;

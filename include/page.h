@@ -101,7 +101,6 @@ DBStatus page_update(
 /*
  * Marks a slot as deleted.
  * This does not compact the page or reclaim the row bytes yet.
- * Later, a compaction step can be added if needed.
  */
 DBStatus page_delete(uint8_t *page_bytes, uint16_t slot_id);
 
