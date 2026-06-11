@@ -1,12 +1,9 @@
-# MiniDB-C
+# MiniDB
 
-MiniDB-C is a small self-contained relational database written in C. It has a
+MiniDB is a small self-contained relational database written in C. It has a
 simple SQL shell, on-disk table/catalog storage, row serialization, buffer pool
 support, primary-key and secondary indexes, and a focused test suite for the
 core database layers.
-
-This project is intentionally compact: it is useful for learning how database
-pieces fit together without hiding the implementation behind a large framework.
 
 ## Features
 
@@ -66,7 +63,7 @@ DELETE FROM users WHERE id = 1;
 
 ## Supported SQL
 
-MiniDB-C currently supports one statement per input line. SQL statements should
+MiniDB currently supports one statement per input line. SQL statements should
 end with a semicolon.
 
 ```sql
