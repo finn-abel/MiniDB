@@ -49,6 +49,47 @@
 #define MAX_INPUT_SIZE 1024
 
 /*
+ * Object names become file names, so accept only the SQL identifier shape:
+ * [A-Za-z_][A-Za-z0-9_]*.
+ */
+static inline bool db_identifier_is_valid(const char *name, size_t buffer_size) {
+    if (name == NULL || buffer_size < 2 || name[0] == '\0') {
+        return false;
+    }
+
+    char first = name[0];
+
+    if (!(
+        (first >= 'A' && first <= 'Z') ||
+        (first >= 'a' && first <= 'z') ||
+        first == '_'
+    )) {
+        return false;
+    }
+
+    size_t i = 1;
+
+    for (; name[i] != '\0'; i++) {
+        char current = name[i];
+
+        if (i >= buffer_size - 1) {
+            return false;
+        }
+
+        if (!(
+            (current >= 'A' && current <= 'Z') ||
+            (current >= 'a' && current <= 'z') ||
+            (current >= '0' && current <= '9') ||
+            current == '_'
+        )) {
+            return false;
+        }
+    }
+
+    return i < buffer_size;
+}
+
+/*
  * DBStatus:
  *   A shared status code enum used across the database.
  *

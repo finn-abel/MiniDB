@@ -240,6 +240,7 @@ static void test_wal_rejects_invalid_inputs(void) {
     WAL wal;
     RID rid = {0, 0};
     uint8_t row_bytes[] = {1, 2, 3};
+    uint8_t oversized_row[PAGE_SIZE + 1];
 
     cleanup_file(wal_path);
     cleanup_table(table_file);
@@ -253,6 +254,8 @@ static void test_wal_rejects_invalid_inputs(void) {
     assert(wal_log_insert(&wal, 1, NULL, rid, row_bytes, sizeof(row_bytes)) == DB_ERROR);
     assert(wal_log_insert(&wal, 1, table_file, rid, NULL, sizeof(row_bytes)) == DB_ERROR);
     assert(wal_log_insert(&wal, 1, table_file, rid, row_bytes, 0) == DB_ERROR);
+    assert(wal_log_insert(&wal, 1, "../escape.tbl", rid, row_bytes, sizeof(row_bytes)) == DB_ERROR);
+    assert(wal_log_insert(&wal, 1, table_file, rid, oversized_row, sizeof(oversized_row)) == DB_ERROR);
     assert(wal_log_delete(&wal, 0, table_file, rid, row_bytes, sizeof(row_bytes)) == DB_ERROR);
     assert(wal_log_commit(&wal, 0) == DB_ERROR);
     assert(wal_close(&wal) == DB_OK);
@@ -263,6 +266,84 @@ static void test_wal_rejects_invalid_inputs(void) {
     cleanup_table(table_file);
 }
 
+static void test_wal_recover_rejects_partial_record(void) {
+    const char *wal_path = "test_wal_partial.log";
+    WAL wal;
+    uint8_t partial_type = WAL_RECORD_INSERT;
+
+    cleanup_file(wal_path);
+
+    assert(wal_open(&wal, wal_path) == DB_OK);
+    assert(wal_log_begin(&wal, 8) == DB_OK);
+    assert(fwrite(&partial_type, sizeof(partial_type), 1, wal.file) == 1);
+    assert(fflush(wal.file) == 0);
+    assert(wal_recover(&wal) == DB_IO_ERROR);
+    assert(wal_close(&wal) == DB_OK);
+
+    cleanup_file(wal_path);
+}
+
+static void test_wal_recover_rejects_sparse_page_id(void) {
+    const char *wal_path = "test_wal_sparse_page.log";
+    const char *table_file = "test_wal_sparse_page.tbl";
+    WAL wal;
+    RID rid = {UINT32_MAX, 0};
+    uint8_t row_bytes[] = {1, 0};
+
+    cleanup_file(wal_path);
+    cleanup_table(table_file);
+
+    assert(wal_open(&wal, wal_path) == DB_OK);
+    assert(wal_log_begin(&wal, 9) == DB_OK);
+    assert(wal_log_insert(&wal, 9, table_file, rid, row_bytes, sizeof(row_bytes)) == DB_OK);
+    assert(wal_log_commit(&wal, 9) == DB_OK);
+    assert(wal_recover(&wal) == DB_ERROR);
+    assert(wal_close(&wal) == DB_OK);
+
+    cleanup_file(wal_path);
+    cleanup_table(table_file);
+}
+
+static void test_wal_rejects_invalid_table_file_shapes(void) {
+    const char *wal_path = "test_wal_table_shapes.log";
+    WAL wal;
+    RID rid = {0, 0};
+    uint8_t row_bytes[] = {1};
+    char long_table[MAX_TABLE_NAME + 5];
+
+    cleanup_file(wal_path);
+    memset(long_table, 'a', MAX_TABLE_NAME);
+    memcpy(long_table + MAX_TABLE_NAME, ".tbl", 5);
+
+    assert(wal_open(&wal, wal_path) == DB_OK);
+    assert(wal_log_insert(&wal, 1, "users", rid, row_bytes, sizeof(row_bytes)) == DB_ERROR);
+    assert(wal_log_insert(&wal, 1, long_table, rid, row_bytes, sizeof(row_bytes)) == DB_ERROR);
+    assert(wal_close(&wal) == DB_OK);
+
+    cleanup_file(wal_path);
+}
+
+static void test_wal_recover_rejects_invalid_table_path(void) {
+    const char *wal_path = "test_wal_bad_table_path.log";
+    const char *bad_table = "../escape.tbl";
+    WAL wal;
+    uint8_t record_type = WAL_RECORD_INSERT;
+    uint64_t txn_id = 10;
+    uint16_t table_len = (uint16_t)strlen(bad_table);
+
+    cleanup_file(wal_path);
+    assert(wal_open(&wal, wal_path) == DB_OK);
+    assert(fwrite(&record_type, sizeof(record_type), 1, wal.file) == 1);
+    assert(fwrite(&txn_id, sizeof(txn_id), 1, wal.file) == 1);
+    assert(fwrite(&table_len, sizeof(table_len), 1, wal.file) == 1);
+    assert(fwrite(bad_table, 1, table_len, wal.file) == table_len);
+    assert(fflush(wal.file) == 0);
+    assert(wal_recover(&wal) == DB_ERROR);
+    assert(wal_close(&wal) == DB_OK);
+
+    cleanup_file(wal_path);
+}
+
 int main(void) {
     test_wal_open_close();
     test_wal_recover_replays_committed_insert();
@@ -271,6 +352,10 @@ int main(void) {
     test_wal_recover_ignores_uncommitted_delete();
     test_wal_recover_is_idempotent_for_insert();
     test_wal_rejects_invalid_inputs();
+    test_wal_recover_rejects_partial_record();
+    test_wal_recover_rejects_sparse_page_id();
+    test_wal_rejects_invalid_table_file_shapes();
+    test_wal_recover_rejects_invalid_table_path();
 
     printf("All WAL tests passed.\n");
 

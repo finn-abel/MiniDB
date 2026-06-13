@@ -177,6 +177,10 @@ static DBStatus secondary_read_value(FILE *file, Value *out_value) {
             return status;
         }
 
+        if (len > PAGE_SIZE) {
+            return DB_ERROR;
+        }
+
         char *text = malloc((size_t)len + 1);
 
         if (text == NULL) {

@@ -24,22 +24,8 @@ static const char *schema_type_name(ValueType type) {
     return "UNKNOWN";
 }
 
-static bool schema_valid_name(const char *name, uint32_t max_len) {
-    if (name == NULL) {
-        return false;
-    }
-
-    /*
-     * Names must be non-empty and fit inside the fixed-size name buffer.
-     * We reserve one byte for the null terminator.
-     */
-    size_t len = strlen(name);
-
-    return len > 0 && len < max_len;
-}
-
 DBStatus schema_init(Schema *schema, const char *table_name) {
-    if (schema == NULL || !schema_valid_name(table_name, MAX_TABLE_NAME)) {
+    if (schema == NULL || !db_identifier_is_valid(table_name, MAX_TABLE_NAME)) {
         return DB_ERROR;
     }
 
@@ -66,7 +52,7 @@ DBStatus schema_add_column(
     bool not_null,
     bool primary_key
 ) {
-    if (schema == NULL || !schema_valid_name(column_name, MAX_COLUMN_NAME)) {
+    if (schema == NULL || !db_identifier_is_valid(column_name, MAX_COLUMN_NAME)) {
         return DB_ERROR;
     }
 

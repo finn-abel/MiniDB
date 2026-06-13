@@ -392,6 +392,79 @@ static void test_catalog_load_rejects_missing_end(void) {
     cleanup_db_dir(path);
 }
 
+static void test_catalog_load_rejects_path_traversal_names(void) {
+    const char *path = "test_catalog_path_traversal";
+    DB db;
+
+    setup_db(&db, path);
+    assert(db_close(&db) == DB_OK);
+
+    write_catalog_file(path, "TABLE ../escape\nCOLUMNS 1\nid INT\nEND\n");
+    assert(db_open(&db, path) == DB_PARSE_ERROR);
+
+    cleanup_db_dir(path);
+
+    setup_db(&db, path);
+    assert(db_close(&db) == DB_OK);
+
+    write_catalog_file(
+        path,
+        "TABLE users\nCOLUMNS 1\nid INT\nEND\n"
+        "INDEX ../../escape users 1 id\n"
+    );
+    assert(db_open(&db, path) == DB_PARSE_ERROR);
+
+    cleanup_db_dir(path);
+}
+
+static void test_catalog_load_rejects_invalid_old_index_column(void) {
+    const char *path = "test_catalog_bad_old_index_column";
+    DB db;
+
+    setup_db(&db, path);
+    assert(db_close(&db) == DB_OK);
+    write_catalog_file(
+        path,
+        "TABLE users\nCOLUMNS 1\nid INT\nEND\n"
+        "INDEX users_name_idx users ../name\n"
+    );
+
+    assert(db_open(&db, path) == DB_PARSE_ERROR);
+    cleanup_db_dir(path);
+}
+
+static void test_catalog_create_index_rejects_invalid_metadata(void) {
+    const char *path = "test_catalog_invalid_index_metadata";
+    DB db;
+    Schema schema;
+    CatalogIndex index;
+
+    setup_db(&db, path);
+    setup_users_schema(&schema);
+    assert(catalog_create_table(&db, &schema) == DB_OK);
+
+    memset(&index, 0, sizeof(index));
+    strcpy(index.index_name, "users_name_idx");
+    strcpy(index.table_name, "users");
+    index.column_count = 1;
+    strcpy(index.column_names[0], "name");
+
+    strcpy(index.index_name, "../escape");
+    assert(catalog_create_index(&db, &index) == DB_ERROR);
+    strcpy(index.index_name, "users_name_idx");
+    strcpy(index.table_name, "../users");
+    assert(catalog_create_index(&db, &index) == DB_ERROR);
+    strcpy(index.table_name, "users");
+    index.column_count = 0;
+    assert(catalog_create_index(&db, &index) == DB_ERROR);
+    index.column_count = 1;
+    strcpy(index.column_names[0], "../name");
+    assert(catalog_create_index(&db, &index) == DB_ERROR);
+
+    assert(db_close(&db) == DB_OK);
+    cleanup_db_dir(path);
+}
+
 int main(void) {
     test_catalog_load_empty_when_missing();
     test_catalog_create_table();
@@ -407,6 +480,9 @@ int main(void) {
     test_catalog_load_old_format_without_constraints();
     test_catalog_load_rejects_bad_type();
     test_catalog_load_rejects_missing_end();
+    test_catalog_load_rejects_path_traversal_names();
+    test_catalog_load_rejects_invalid_old_index_column();
+    test_catalog_create_index_rejects_invalid_metadata();
 
     printf("All catalog tests passed.\n");
 

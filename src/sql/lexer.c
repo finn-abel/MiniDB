@@ -1,4 +1,6 @@
+#include <errno.h>
 #include <ctype.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,7 +201,20 @@ static DBStatus lexer_read_integer(Lexer *lexer, Token *out_token) {
         return status;
     }
 
-    out_token->int_value = (int32_t)strtol(out_token->lexeme, NULL, 10);
+    errno = 0;
+    char *end = NULL;
+    long value = strtol(out_token->lexeme, &end, 10);
+
+    if (
+        errno == ERANGE ||
+        end == out_token->lexeme ||
+        *end != '\0' ||
+        value > INT32_MAX
+    ) {
+        return DB_PARSE_ERROR;
+    }
+
+    out_token->int_value = (int32_t)value;
 
     return DB_OK;
 }

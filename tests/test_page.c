@@ -303,6 +303,81 @@ static void test_page_insert_until_full(void) {
     assert(status == DB_FULL);
 }
 
+static void test_page_rejects_corrupt_slot_count(void) {
+    uint8_t page[PAGE_SIZE];
+    PageHeader header;
+    uint8_t row_bytes[] = {1};
+    uint16_t slot_id = 0;
+
+    assert(page_init(page, 1) == DB_OK);
+    memcpy(&header, page, sizeof(header));
+    header.slot_count = UINT16_MAX;
+    memcpy(page, &header, sizeof(header));
+
+    assert(page_validate(page) == DB_ERROR);
+    assert(page_slot_count(page) == 0);
+    assert(page_insert(page, row_bytes, sizeof(row_bytes), &slot_id) == DB_ERROR);
+}
+
+static void test_page_rejects_corrupt_slot_bounds(void) {
+    uint8_t page[PAGE_SIZE];
+    uint8_t row_bytes[] = {1, 2, 3};
+    uint16_t slot_id = 0;
+    PageSlot slot;
+
+    assert(page_init(page, 1) == DB_OK);
+    assert(page_insert(page, row_bytes, sizeof(row_bytes), &slot_id) == DB_OK);
+
+    memcpy(&slot, page + sizeof(PageHeader), sizeof(slot));
+    slot.offset = 1;
+    memcpy(page + sizeof(PageHeader), &slot, sizeof(slot));
+
+    assert(page_validate(page) == DB_ERROR);
+    assert(page_slot_is_active(page, slot_id) == false);
+}
+
+static void test_page_rejects_corruption_across_accessors(void) {
+    uint8_t page[PAGE_SIZE];
+    uint8_t row_bytes[] = {1, 2, 3};
+    uint8_t replacement[] = {4, 5};
+    uint8_t *stored = NULL;
+    uint32_t stored_len = 0;
+    uint16_t slot_id = 0;
+    PageHeader header;
+
+    assert(page_init(page, 1) == DB_OK);
+    assert(page_insert(page, row_bytes, sizeof(row_bytes), &slot_id) == DB_OK);
+    memcpy(&header, page, sizeof(header));
+    header.page_type = PAGE_TYPE_BTREE_LEAF;
+    memcpy(page, &header, sizeof(header));
+
+    assert(page_validate(NULL) == DB_ERROR);
+    assert(page_validate(page) == DB_ERROR);
+    assert(page_next_insert_slot(page, 1, &slot_id) == DB_ERROR);
+    assert(page_get(page, slot_id, &stored, &stored_len) == DB_ERROR);
+    assert(page_update(page, slot_id, replacement, sizeof(replacement)) == DB_ERROR);
+    assert(page_delete(page, slot_id) == DB_ERROR);
+    assert(page_free_space(page) == 0);
+    assert(page_insertable_space(page) == 0);
+    assert(page_slot_count(page) == 0);
+    assert(page_slot_is_active(page, slot_id) == false);
+}
+
+static void test_page_rejects_corrupt_slot_flags(void) {
+    uint8_t page[PAGE_SIZE];
+    uint8_t row_bytes[] = {1, 2, 3};
+    uint16_t slot_id = 0;
+    PageSlot slot;
+
+    assert(page_init(page, 1) == DB_OK);
+    assert(page_insert(page, row_bytes, sizeof(row_bytes), &slot_id) == DB_OK);
+    memcpy(&slot, page + sizeof(PageHeader), sizeof(slot));
+    slot.flags = 0xff;
+    memcpy(page + sizeof(PageHeader), &slot, sizeof(slot));
+
+    assert(page_validate(page) == DB_ERROR);
+}
+
 int main(void) {
     test_page_init();
     test_page_init_rejects_null();
@@ -328,6 +403,10 @@ int main(void) {
     test_page_slot_count_null();
     test_page_slot_is_active_invalid_inputs();
     test_page_insert_until_full();
+    test_page_rejects_corrupt_slot_count();
+    test_page_rejects_corrupt_slot_bounds();
+    test_page_rejects_corruption_across_accessors();
+    test_page_rejects_corrupt_slot_flags();
 
     printf("All page tests passed.\n");
 

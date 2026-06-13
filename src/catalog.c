@@ -44,7 +44,12 @@ static DBStatus catalog_build_table_file_path(
     char *out_path,
     uint32_t out_size
 ) {
-    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+    if (
+        db == NULL ||
+        !db_identifier_is_valid(table_name, MAX_TABLE_NAME) ||
+        out_path == NULL ||
+        out_size == 0
+    ) {
         return DB_ERROR;
     }
 
@@ -73,7 +78,12 @@ static DBStatus catalog_build_primary_key_index_path(
     char *out_path,
     uint32_t out_size
 ) {
-    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+    if (
+        db == NULL ||
+        !db_identifier_is_valid(table_name, MAX_TABLE_NAME) ||
+        out_path == NULL ||
+        out_size == 0
+    ) {
         return DB_ERROR;
     }
 
@@ -102,7 +112,12 @@ static DBStatus catalog_build_secondary_index_path(
     char *out_path,
     uint32_t out_size
 ) {
-    if (db == NULL || index_name == NULL || out_path == NULL || out_size == 0) {
+    if (
+        db == NULL ||
+        !db_identifier_is_valid(index_name, MAX_INDEX_NAME) ||
+        out_path == NULL ||
+        out_size == 0
+    ) {
         return DB_ERROR;
     }
 
@@ -319,6 +334,14 @@ DBStatus catalog_load(DB *db) {
                 third_field
             ) == 3
         ) {
+            if (
+                !db_identifier_is_valid(index_name, MAX_INDEX_NAME) ||
+                !db_identifier_is_valid(index_table_name, MAX_TABLE_NAME)
+            ) {
+                fclose(file);
+                return DB_PARSE_ERROR;
+            }
+
             if (db->catalog.index_count >= MAX_CATALOG_INDEXES) {
                 fclose(file);
                 return DB_FULL;
@@ -363,7 +386,10 @@ DBStatus catalog_load(DB *db) {
                 for (uint16_t i = 0; i < parsed_column_count; i++) {
                     if (
                         sscanf(cursor, "%63s", index->column_names[i]) != 1 ||
-                        strlen(index->column_names[i]) >= MAX_COLUMN_NAME
+                        !db_identifier_is_valid(
+                            index->column_names[i],
+                            MAX_COLUMN_NAME
+                        )
                     ) {
                         fclose(file);
                         return DB_PARSE_ERROR;
@@ -388,6 +414,12 @@ DBStatus catalog_load(DB *db) {
                  * one-column non-unique index keeps existing databases usable.
                  */
                 index->column_count = 1;
+
+                if (!db_identifier_is_valid(third_field, MAX_COLUMN_NAME)) {
+                    fclose(file);
+                    return DB_PARSE_ERROR;
+                }
+
                 strncpy(
                     index->column_names[0],
                     third_field,
@@ -408,6 +440,11 @@ DBStatus catalog_load(DB *db) {
          */
         if (sscanf(line, "TABLE %63s", table_name) != 1) {
             continue;
+        }
+
+        if (!db_identifier_is_valid(table_name, MAX_TABLE_NAME)) {
+            fclose(file);
+            return DB_PARSE_ERROR;
         }
 
         if (db->catalog.table_count >= MAX_CATALOG_TABLES) {
@@ -616,6 +653,21 @@ DBStatus catalog_save(const DB *db) {
 DBStatus catalog_create_index(DB *db, const CatalogIndex *index) {
     if (db == NULL || index == NULL) {
         return DB_ERROR;
+    }
+
+    if (
+        !db_identifier_is_valid(index->index_name, MAX_INDEX_NAME) ||
+        !db_identifier_is_valid(index->table_name, MAX_TABLE_NAME) ||
+        index->column_count == 0 ||
+        index->column_count > MAX_COLUMNS
+    ) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < index->column_count; i++) {
+        if (!db_identifier_is_valid(index->column_names[i], MAX_COLUMN_NAME)) {
+            return DB_ERROR;
+        }
     }
 
     if (

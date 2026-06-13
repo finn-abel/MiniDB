@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "buffer/buffer_pool.h"
 #include "index/btree.h"
@@ -372,6 +373,103 @@ static void test_btree_rejects_null_inputs(void) {
     cleanup_file(path);
 }
 
+static void test_btree_open_rejects_corrupt_key_count(void) {
+    const char *path = "test_btree_corrupt_count.db";
+    BTree tree;
+    Pager pager;
+    uint8_t page[PAGE_SIZE];
+    uint16_t bad_count = BTREE_LEAF_MAX_ENTRIES + 1;
+
+    cleanup_file(path);
+    assert(btree_open(&tree, path) == DB_OK);
+    assert(btree_close(&tree) == DB_OK);
+    assert(buffer_pool_discard_file(path) == DB_OK);
+
+    assert(pager_open(&pager, path) == DB_OK);
+    assert(pager_read_page(&pager, BTREE_ROOT_PAGE_ID, page) == DB_OK);
+    memcpy(page + 2, &bad_count, sizeof(bad_count));
+    assert(pager_write_page(&pager, BTREE_ROOT_PAGE_ID, page) == DB_OK);
+    assert(pager_close(&pager) == DB_OK);
+
+    assert(btree_open(&tree, path) == DB_ERROR);
+    assert(buffer_pool_discard_file(path) == DB_OK);
+    cleanup_file(path);
+}
+
+static void test_btree_operations_reject_corrupt_node_type(void) {
+    const char *path = "test_btree_corrupt_type.db";
+    BTree tree;
+    RID rid = {1, 1};
+    RID found;
+    uint8_t *root = NULL;
+
+    cleanup_file(path);
+    assert(btree_open(&tree, path) == DB_OK);
+    assert(buffer_pool_fetch_page(path, BTREE_ROOT_PAGE_ID, &root) == DB_OK);
+    root[0] = 0xff;
+    assert(buffer_pool_unpin_page(path, BTREE_ROOT_PAGE_ID, true) == DB_OK);
+
+    assert(btree_search(&tree, 1, &found) == DB_ERROR);
+    assert(btree_insert(&tree, 1, rid) == DB_ERROR);
+    assert(btree_delete(&tree, 1) == DB_ERROR);
+    assert(btree_close(&tree) == DB_OK);
+
+    cleanup_file(path);
+}
+
+static void test_btree_operations_reject_cyclic_child_links(void) {
+    const char *path = "test_btree_cycle.db";
+    BTree tree;
+    RID rid = {1, 1};
+    RID found;
+    uint8_t *root = NULL;
+
+    cleanup_file(path);
+    assert(btree_open(&tree, path) == DB_OK);
+
+    for (int32_t key = 0; key <= BTREE_LEAF_MAX_ENTRIES; key++) {
+        assert(btree_insert(&tree, key, rid_for_key(key)) == DB_OK);
+    }
+
+    assert(buffer_pool_fetch_page(path, BTREE_ROOT_PAGE_ID, &root) == DB_OK);
+
+    for (uint16_t i = 0; i <= BTREE_INTERNAL_MAX_KEYS; i++) {
+        uint32_t root_page_id = BTREE_ROOT_PAGE_ID;
+        memcpy(root + 8 + i * sizeof(uint32_t), &root_page_id, sizeof(root_page_id));
+    }
+
+    assert(buffer_pool_unpin_page(path, BTREE_ROOT_PAGE_ID, true) == DB_OK);
+    assert(btree_search(&tree, 1, &found) == DB_ERROR);
+    assert(btree_insert(&tree, 1, rid) == DB_ERROR);
+    assert(btree_delete(&tree, 1) == DB_ERROR);
+    assert(btree_close(&tree) == DB_OK);
+
+    cleanup_file(path);
+}
+
+static void test_btree_operations_reject_empty_open_file(void) {
+    const char *path = "test_btree_empty_open.db";
+    BTree tree;
+    RID rid = {1, 1};
+    RID found;
+    FILE *file;
+
+    cleanup_file(path);
+    assert(btree_open(&tree, path) == DB_OK);
+    assert(buffer_pool_discard_file(path) == DB_OK);
+
+    file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fclose(file) == 0);
+
+    assert(btree_search(&tree, 1, &found) == DB_ERROR);
+    assert(btree_insert(&tree, 1, rid) == DB_ERROR);
+    assert(btree_delete(&tree, 1) == DB_ERROR);
+    assert(btree_close(&tree) == DB_OK);
+
+    cleanup_file(path);
+}
+
 int main(void) {
     test_btree_open_creates_root_leaf();
     test_btree_insert_and_search_single_key();
@@ -387,6 +485,10 @@ int main(void) {
     test_btree_split_helpers_reject_invalid_pages();
     test_btree_rejects_closed_tree_operations();
     test_btree_rejects_null_inputs();
+    test_btree_open_rejects_corrupt_key_count();
+    test_btree_operations_reject_corrupt_node_type();
+    test_btree_operations_reject_cyclic_child_links();
+    test_btree_operations_reject_empty_open_file();
 
     printf("All B+ tree tests passed.\n");
 

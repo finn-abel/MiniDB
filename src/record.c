@@ -772,6 +772,13 @@ DBStatus record_scan(
             return status;
         }
 
+        status = page_validate(page_buffer);
+
+        if (status != DB_OK) {
+            buffer_pool_unpin_page(table_file, page_id, false);
+            return status;
+        }
+
         uint16_t slot_count = page_slot_count(page_buffer);
 
         /*

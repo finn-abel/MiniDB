@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include "common.h"
+#include "page.h"
+#include "pager.h"
 #include "record.h"
 #include "rid.h"
 #include "row.h"
@@ -465,6 +467,28 @@ static void test_record_scan_returns_callback_error(void) {
     cleanup_file(path);
 }
 
+static void test_record_scan_rejects_corrupt_page(void) {
+    const char *path = "test_record_scan_corrupt.db";
+    Pager pager;
+    uint8_t page[PAGE_SIZE];
+    uint32_t page_id = 0;
+    PageHeader header;
+    ScanContext context = {0};
+
+    cleanup_file(path);
+    assert(page_init(page, 0) == DB_OK);
+    memcpy(&header, page, sizeof(header));
+    header.page_type = PAGE_TYPE_BTREE_LEAF;
+    memcpy(page, &header, sizeof(header));
+
+    assert(pager_open(&pager, path) == DB_OK);
+    assert(pager_allocate_page(&pager, page, &page_id) == DB_OK);
+    assert(pager_close(&pager) == DB_OK);
+    assert(record_scan(path, count_scan_callback, &context) == DB_ERROR);
+
+    cleanup_file(path);
+}
+
 int main(void) {
     test_record_insert_single_row();
     test_record_insert_multiple_rows();
@@ -488,6 +512,7 @@ int main(void) {
     test_record_scan_skips_deleted_rows();
     test_record_scan_rejects_null_inputs();
     test_record_scan_returns_callback_error();
+    test_record_scan_rejects_corrupt_page();
 
     printf("All record tests passed.\n");
 

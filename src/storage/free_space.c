@@ -278,6 +278,13 @@ DBStatus free_space_rebuild(const char *table_file) {
             return status;
         }
 
+        status = page_validate(page_buffer);
+
+        if (status != DB_OK) {
+            pager_close(&pager);
+            return status;
+        }
+
         /*
          * page_insertable_space reads only page metadata, so rebuild does not
          * need to deserialize rows. Tombstone slots count as reusable slot

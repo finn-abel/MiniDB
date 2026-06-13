@@ -35,6 +35,55 @@ static bool wal_is_open(const WAL *wal) {
     return wal != NULL && wal->is_open && wal->file != NULL;
 }
 
+static bool wal_table_file_is_valid(const WAL *wal, const char *table_file) {
+    if (!wal_is_open(wal) || table_file == NULL) {
+        return false;
+    }
+
+    const char *filename = table_file;
+    const char *wal_slash = strrchr(wal->file_path, '/');
+
+    if (wal_slash != NULL) {
+        size_t directory_len = (size_t)(wal_slash - wal->file_path);
+        const char suffix[] = "/tables/";
+        size_t prefix_len = directory_len + sizeof(suffix) - 1;
+
+        if (
+            prefix_len >= MAX_DB_PATH ||
+            strncmp(table_file, wal->file_path, directory_len) != 0 ||
+            strncmp(table_file + directory_len, suffix, sizeof(suffix) - 1) != 0
+        ) {
+            return false;
+        }
+
+        filename = table_file + prefix_len;
+    } else if (strchr(table_file, '/') != NULL) {
+        return false;
+    }
+
+    size_t filename_len = strlen(filename);
+    const char extension[] = ".tbl";
+
+    if (
+        filename_len <= sizeof(extension) - 1 ||
+        strcmp(filename + filename_len - (sizeof(extension) - 1), extension) != 0
+    ) {
+        return false;
+    }
+
+    size_t name_len = filename_len - (sizeof(extension) - 1);
+
+    if (name_len >= MAX_TABLE_NAME) {
+        return false;
+    }
+
+    char table_name[MAX_TABLE_NAME];
+    memcpy(table_name, filename, name_len);
+    table_name[name_len] = '\0';
+
+    return db_identifier_is_valid(table_name, MAX_TABLE_NAME);
+}
+
 static DBStatus wal_write_bytes(WAL *wal, const void *bytes, size_t len) {
     if (!wal_is_open(wal) || bytes == NULL || len == 0) {
         return DB_ERROR;
@@ -77,6 +126,13 @@ static DBStatus wal_read_bytes(FILE *file, void *bytes, size_t len, bool *out_eo
     return DB_IO_ERROR;
 }
 
+static DBStatus wal_read_required(FILE *file, void *bytes, size_t len) {
+    bool eof = false;
+    DBStatus status = wal_read_bytes(file, bytes, len, &eof);
+
+    return status == DB_NOT_FOUND && eof ? DB_IO_ERROR : status;
+}
+
 static DBStatus wal_flush(WAL *wal) {
     if (!wal_is_open(wal)) {
         return DB_ERROR;
@@ -116,7 +172,10 @@ static DBStatus wal_write_record_header(
 }
 
 static DBStatus wal_write_table_name(WAL *wal, const char *table_file) {
-    if (table_file == NULL || strlen(table_file) >= MAX_DB_PATH) {
+    if (
+        !wal_table_file_is_valid(wal, table_file) ||
+        strlen(table_file) >= MAX_DB_PATH
+    ) {
         return DB_ERROR;
     }
 
@@ -148,6 +207,7 @@ static DBStatus wal_log_row_record(
         table_file == NULL ||
         row_bytes == NULL ||
         row_len == 0 ||
+        row_len > PAGE_SIZE ||
         (type != WAL_RECORD_INSERT && type != WAL_RECORD_DELETE)
     ) {
         return DB_ERROR;
@@ -221,11 +281,7 @@ static DBStatus wal_read_record(WAL *wal, WalRecord *record, bool *out_eof) {
         return DB_ERROR;
     }
 
-    /*
-     * A short read at record boundary means normal EOF. A short read in the
-     * middle of a record is treated as DB_NOT_FOUND/EOF by wal_read_bytes for
-     * now; production WAL would validate checksums and truncate partial tails.
-     */
+    /* Clean EOF is valid only before a new record; partial records are errors. */
     memset(record, 0, sizeof(WalRecord));
 
     uint8_t record_type = 0;
@@ -242,12 +298,7 @@ static DBStatus wal_read_record(WAL *wal, WalRecord *record, bool *out_eof) {
 
     record->type = (WalRecordType)record_type;
 
-    status = wal_read_bytes(
-        wal->file,
-        &record->txn_id,
-        sizeof(record->txn_id),
-        out_eof
-    );
+    status = wal_read_required(wal->file, &record->txn_id, sizeof(record->txn_id));
 
     if (status != DB_OK) {
         return status;
@@ -266,7 +317,7 @@ static DBStatus wal_read_record(WAL *wal, WalRecord *record, bool *out_eof) {
     }
 
     uint16_t table_len = 0;
-    status = wal_read_bytes(wal->file, &table_len, sizeof(table_len), out_eof);
+    status = wal_read_required(wal->file, &table_len, sizeof(table_len));
 
     if (status != DB_OK) {
         return status;
@@ -276,7 +327,7 @@ static DBStatus wal_read_record(WAL *wal, WalRecord *record, bool *out_eof) {
         return DB_ERROR;
     }
 
-    status = wal_read_bytes(wal->file, record->table_file, table_len, out_eof);
+    status = wal_read_required(wal->file, record->table_file, table_len);
 
     if (status != DB_OK) {
         return status;
@@ -288,35 +339,37 @@ static DBStatus wal_read_record(WAL *wal, WalRecord *record, bool *out_eof) {
      */
     record->table_file[table_len] = '\0';
 
-    status = wal_read_bytes(
+    if (!wal_table_file_is_valid(wal, record->table_file)) {
+        return DB_ERROR;
+    }
+
+    status = wal_read_required(
         wal->file,
         &record->rid.page_id,
-        sizeof(record->rid.page_id),
-        out_eof
+        sizeof(record->rid.page_id)
     );
 
     if (status != DB_OK) {
         return status;
     }
 
-    status = wal_read_bytes(
+    status = wal_read_required(
         wal->file,
         &record->rid.slot_id,
-        sizeof(record->rid.slot_id),
-        out_eof
+        sizeof(record->rid.slot_id)
     );
 
     if (status != DB_OK) {
         return status;
     }
 
-    status = wal_read_bytes(wal->file, &record->row_len, sizeof(record->row_len), out_eof);
+    status = wal_read_required(wal->file, &record->row_len, sizeof(record->row_len));
 
     if (status != DB_OK) {
         return status;
     }
 
-    if (record->row_len == 0) {
+    if (record->row_len == 0 || record->row_len > PAGE_SIZE) {
         return DB_ERROR;
     }
 
@@ -330,7 +383,7 @@ static DBStatus wal_read_record(WAL *wal, WalRecord *record, bool *out_eof) {
         return DB_ERROR;
     }
 
-    status = wal_read_bytes(wal->file, record->row_bytes, record->row_len, out_eof);
+    status = wal_read_required(wal->file, record->row_bytes, record->row_len);
 
     if (status != DB_OK) {
         wal_record_free(record);
@@ -471,6 +524,10 @@ static DBStatus wal_replay_ensure_page(const char *table_file, uint32_t page_id)
 
     if (status != DB_OK) {
         return status;
+    }
+
+    if (page_id > page_count) {
+        return DB_ERROR;
     }
 
     /*

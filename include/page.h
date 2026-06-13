@@ -53,6 +53,9 @@ typedef struct {
  */
 DBStatus page_init(uint8_t *page_bytes, uint32_t page_id);
 
+/* Validates page header and slot metadata before callers traverse a page. */
+DBStatus page_validate(const uint8_t *page_bytes);
+
 /*
  * Inserts raw row bytes into the page.
  * The row data is copied into the page from the end backward.

@@ -89,6 +89,25 @@ static uint16_t btree_node_key_count(const uint8_t *page) {
     return btree_read_u16(page, BTREE_KEY_COUNT_OFFSET);
 }
 
+static DBStatus btree_validate_node(const uint8_t *page) {
+    if (page == NULL) {
+        return DB_ERROR;
+    }
+
+    uint8_t node_type = btree_read_u8(page, BTREE_NODE_TYPE_OFFSET);
+    uint16_t key_count = btree_node_key_count(page);
+
+    if (node_type == PAGE_TYPE_BTREE_LEAF) {
+        return key_count <= BTREE_LEAF_MAX_ENTRIES ? DB_OK : DB_ERROR;
+    }
+
+    if (node_type == PAGE_TYPE_BTREE_INTERNAL) {
+        return key_count <= BTREE_INTERNAL_MAX_KEYS ? DB_OK : DB_ERROR;
+    }
+
+    return DB_ERROR;
+}
+
 static void btree_set_node_key_count(uint8_t *page, uint16_t key_count) {
     btree_write_u16(page, BTREE_KEY_COUNT_OFFSET, key_count);
 }
@@ -282,7 +301,10 @@ static DBStatus btree_leaf_insert(
         return status;
     }
 
-    if (btree_read_u8(page, BTREE_NODE_TYPE_OFFSET) != PAGE_TYPE_BTREE_LEAF) {
+    if (
+        btree_validate_node(page) != DB_OK ||
+        btree_read_u8(page, BTREE_NODE_TYPE_OFFSET) != PAGE_TYPE_BTREE_LEAF
+    ) {
         buffer_pool_unpin_page(tree->file_path, page_id, false);
         return DB_ERROR;
     }
@@ -444,13 +466,24 @@ static DBStatus btree_insert_recursive(
     uint32_t page_id,
     int32_t key,
     RID rid,
-    BTreeSplitResult *split
+    BTreeSplitResult *split,
+    uint32_t depth,
+    uint32_t max_depth
 ) {
+    if (depth >= max_depth) {
+        return DB_ERROR;
+    }
+
     uint8_t *page = NULL;
     DBStatus status = buffer_pool_fetch_page(tree->file_path, page_id, &page);
 
     if (status != DB_OK) {
         return status;
+    }
+
+    if (btree_validate_node(page) != DB_OK) {
+        buffer_pool_unpin_page(tree->file_path, page_id, false);
+        return DB_ERROR;
     }
 
     uint8_t node_type = btree_read_u8(page, BTREE_NODE_TYPE_OFFSET);
@@ -489,7 +522,15 @@ static DBStatus btree_insert_recursive(
     child_split.separator_key = 0;
     child_split.right_page_id = BTREE_INVALID_PAGE_ID;
 
-    status = btree_insert_recursive(tree, child_page_id, key, rid, &child_split);
+    status = btree_insert_recursive(
+        tree,
+        child_page_id,
+        key,
+        rid,
+        &child_split,
+        depth + 1,
+        max_depth
+    );
 
     /*
      * If the child did not split, this internal page has nothing to absorb.
@@ -503,6 +544,11 @@ static DBStatus btree_insert_recursive(
 
     if (status != DB_OK) {
         return status;
+    }
+
+    if (btree_validate_node(page) != DB_OK) {
+        buffer_pool_unpin_page(tree->file_path, page_id, false);
+        return DB_ERROR;
     }
 
     int32_t keys[BTREE_INTERNAL_MAX_KEYS + 1];
@@ -638,6 +684,33 @@ DBStatus btree_open(BTree *tree, const char *file_path) {
         if (status != DB_OK) {
             return status;
         }
+    } else {
+        uint8_t *root_page = NULL;
+
+        status = buffer_pool_fetch_page(
+            tree->file_path,
+            BTREE_ROOT_PAGE_ID,
+            &root_page
+        );
+
+        if (status != DB_OK) {
+            return status;
+        }
+
+        DBStatus validation_status = btree_validate_node(root_page);
+        DBStatus unpin_status = buffer_pool_unpin_page(
+            tree->file_path,
+            BTREE_ROOT_PAGE_ID,
+            false
+        );
+
+        if (validation_status != DB_OK) {
+            return validation_status;
+        }
+
+        if (unpin_status != DB_OK) {
+            return unpin_status;
+        }
     }
 
     tree->is_open = true;
@@ -664,18 +737,29 @@ DBStatus btree_search(BTree *tree, int32_t key, RID *out_rid) {
     }
 
     uint32_t page_id = BTREE_ROOT_PAGE_ID;
+    uint32_t page_count = 0;
+    DBStatus status = buffer_pool_page_count(tree->file_path, &page_count);
+
+    if (status != DB_OK || page_count == 0) {
+        return status == DB_OK ? DB_ERROR : status;
+    }
 
     /*
      * This is deliberately a simple primary-key maintenance delete: descend to
      * the leaf, remove the key, and leave internal separators/rebalancing alone.
      * Search remains correct because separators are routing hints to leaves.
      */
-    while (true) {
+    for (uint32_t depth = 0; depth < page_count; depth++) {
         uint8_t *page = NULL;
-        DBStatus status = buffer_pool_fetch_page(tree->file_path, page_id, &page);
+        status = buffer_pool_fetch_page(tree->file_path, page_id, &page);
 
         if (status != DB_OK) {
             return status;
+        }
+
+        if (btree_validate_node(page) != DB_OK) {
+            buffer_pool_unpin_page(tree->file_path, page_id, false);
+            return DB_ERROR;
         }
 
         uint8_t node_type = btree_read_u8(page, BTREE_NODE_TYPE_OFFSET);
@@ -711,6 +795,8 @@ DBStatus btree_search(BTree *tree, int32_t key, RID *out_rid) {
 
         page_id = child_page_id;
     }
+
+    return DB_ERROR;
 }
 
 DBStatus btree_insert(BTree *tree, int32_t key, RID rid) {
@@ -718,17 +804,26 @@ DBStatus btree_insert(BTree *tree, int32_t key, RID rid) {
         return DB_ERROR;
     }
 
+    uint32_t page_count = 0;
+    DBStatus status = buffer_pool_page_count(tree->file_path, &page_count);
+
+    if (status != DB_OK || page_count == 0) {
+        return status == DB_OK ? DB_ERROR : status;
+    }
+
     BTreeSplitResult split;
     split.did_split = false;
     split.separator_key = 0;
     split.right_page_id = BTREE_INVALID_PAGE_ID;
 
-    DBStatus status = btree_insert_recursive(
+    status = btree_insert_recursive(
         tree,
         BTREE_ROOT_PAGE_ID,
         key,
         rid,
-        &split
+        &split,
+        0,
+        page_count
     );
 
     if (status != DB_OK) {
@@ -749,13 +844,24 @@ DBStatus btree_delete(BTree *tree, int32_t key) {
     }
 
     uint32_t page_id = BTREE_ROOT_PAGE_ID;
+    uint32_t page_count = 0;
+    DBStatus status = buffer_pool_page_count(tree->file_path, &page_count);
 
-    while (true) {
+    if (status != DB_OK || page_count == 0) {
+        return status == DB_OK ? DB_ERROR : status;
+    }
+
+    for (uint32_t depth = 0; depth < page_count; depth++) {
         uint8_t *page = NULL;
-        DBStatus status = buffer_pool_fetch_page(tree->file_path, page_id, &page);
+        status = buffer_pool_fetch_page(tree->file_path, page_id, &page);
 
         if (status != DB_OK) {
             return status;
+        }
+
+        if (btree_validate_node(page) != DB_OK) {
+            buffer_pool_unpin_page(tree->file_path, page_id, false);
+            return DB_ERROR;
         }
 
         uint8_t node_type = btree_read_u8(page, BTREE_NODE_TYPE_OFFSET);
@@ -812,6 +918,8 @@ DBStatus btree_delete(BTree *tree, int32_t key) {
 
         return buffer_pool_flush_page(tree->file_path, page_id);
     }
+
+    return DB_ERROR;
 }
 
 DBStatus btree_split_leaf(
@@ -832,6 +940,7 @@ DBStatus btree_split_leaf(
     }
 
     if (
+        btree_validate_node(page) != DB_OK ||
         btree_read_u8(page, BTREE_NODE_TYPE_OFFSET) != PAGE_TYPE_BTREE_LEAF ||
         btree_node_key_count(page) != BTREE_LEAF_MAX_ENTRIES
     ) {
@@ -908,6 +1017,7 @@ DBStatus btree_split_internal(
     }
 
     if (
+        btree_validate_node(page) != DB_OK ||
         btree_read_u8(page, BTREE_NODE_TYPE_OFFSET) != PAGE_TYPE_BTREE_INTERNAL ||
         btree_node_key_count(page) != BTREE_INTERNAL_MAX_KEYS
     ) {

@@ -393,6 +393,51 @@ static void test_secondary_index_scan_propagates_callback_error(void) {
     cleanup_file(index_file);
 }
 
+static void test_secondary_index_scan_rejects_oversized_text(void) {
+    const char *table_file = "test_secondary_oversized_text.tbl";
+    const char *index_file = "test_secondary_oversized_text.sidx";
+    Schema schema;
+    RID first;
+    RID second;
+    RID third;
+    RIDList list = {0};
+    uint16_t name_column = 1;
+    uint32_t oversized_len = PAGE_SIZE + 1;
+    Value name;
+    WhereCondition condition;
+    FILE *file;
+    long text_len_offset =
+        (long)(sizeof(uint32_t) + 2 * sizeof(uint16_t) + sizeof(uint32_t) +
+               sizeof(uint16_t) + sizeof(uint8_t));
+
+    cleanup_file(table_file);
+    cleanup_file(index_file);
+    make_user_schema(&schema);
+    seed_users(table_file, &first, &second, &third);
+    assert(secondary_index_build(index_file, table_file, &schema, &name_column, 1) == DB_OK);
+
+    file = fopen(index_file, "r+b");
+    assert(file != NULL);
+    assert(fseek(file, text_len_offset, SEEK_SET) == 0);
+    assert(fwrite(&oversized_len, sizeof(oversized_len), 1, file) == 1);
+    assert(fclose(file) == 0);
+
+    assert(value_text(&name, "Finn") == DB_OK);
+    assert(ast_where_init(&condition, "name", SQL_OPERATOR_EQUAL, &name) == DB_OK);
+    assert(secondary_index_scan_condition(
+        index_file,
+        0,
+        &condition,
+        collect_rid_callback,
+        &list
+    ) == DB_ERROR);
+
+    ast_where_free(&condition);
+    value_free(&name);
+    cleanup_file(table_file);
+    cleanup_file(index_file);
+}
+
 int main(void) {
     test_secondary_index_build_and_scan_duplicate_int_keys();
     test_secondary_index_scan_text_key();
@@ -402,6 +447,7 @@ int main(void) {
     test_secondary_index_scan_rejects_invalid_inputs();
     test_secondary_index_scan_no_matches();
     test_secondary_index_scan_propagates_callback_error();
+    test_secondary_index_scan_rejects_oversized_text();
 
     printf("All secondary index tests passed.\n");
 

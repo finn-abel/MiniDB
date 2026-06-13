@@ -28,7 +28,7 @@ static DBStatus db_create_dir_if_needed(const char *path) {
      */
     if (stat(path, &info) == 0) {
         if (S_ISDIR(info.st_mode)) {
-            return DB_OK;
+            return chmod(path, 0700) == 0 ? DB_OK : DB_IO_ERROR;
         }
 
         return DB_ERROR;
@@ -45,7 +45,7 @@ static DBStatus db_create_dir_if_needed(const char *path) {
     /*
      * Create the missing directory.
      */
-    if (mkdir(path, 0755) != 0) {
+    if (mkdir(path, 0700) != 0) {
         return DB_IO_ERROR;
     }
 
@@ -108,7 +108,12 @@ static DBStatus db_table_file_path(
     char *out_path,
     size_t out_size
 ) {
-    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+    if (
+        db == NULL ||
+        !db_identifier_is_valid(table_name, MAX_TABLE_NAME) ||
+        out_path == NULL ||
+        out_size == 0
+    ) {
         return DB_ERROR;
     }
 
@@ -127,7 +132,12 @@ static DBStatus db_primary_key_index_path(
     char *out_path,
     size_t out_size
 ) {
-    if (db == NULL || table_name == NULL || out_path == NULL || out_size == 0) {
+    if (
+        db == NULL ||
+        !db_identifier_is_valid(table_name, MAX_TABLE_NAME) ||
+        out_path == NULL ||
+        out_size == 0
+    ) {
         return DB_ERROR;
     }
 
@@ -156,7 +166,12 @@ static DBStatus db_secondary_index_path(
     char *out_path,
     size_t out_size
 ) {
-    if (db == NULL || index_name == NULL || out_path == NULL || out_size == 0) {
+    if (
+        db == NULL ||
+        !db_identifier_is_valid(index_name, MAX_INDEX_NAME) ||
+        out_path == NULL ||
+        out_size == 0
+    ) {
         return DB_ERROR;
     }
 

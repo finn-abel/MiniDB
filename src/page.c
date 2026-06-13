@@ -52,6 +52,63 @@ static void page_write_slot(
     memcpy(page_bytes + offset, slot, sizeof(PageSlot));
 }
 
+static bool page_header_is_valid(const PageHeader *header) {
+    if (header == NULL || header->page_type != PAGE_TYPE_DATA) {
+        return false;
+    }
+
+    uint32_t slot_directory_end =
+        sizeof(PageHeader) + (uint32_t)header->slot_count * sizeof(PageSlot);
+
+    return (
+        slot_directory_end <= PAGE_SIZE &&
+        header->free_start == slot_directory_end &&
+        header->free_end >= header->free_start &&
+        header->free_end <= PAGE_SIZE
+    );
+}
+
+static bool page_slot_is_valid(const PageHeader *header, const PageSlot *slot) {
+    if (header == NULL || slot == NULL) {
+        return false;
+    }
+
+    if (slot->flags != PAGE_SLOT_ACTIVE && slot->flags != PAGE_SLOT_DELETED) {
+        return false;
+    }
+
+    return (
+        slot->length > 0 &&
+        slot->offset >= header->free_end &&
+        slot->offset <= PAGE_SIZE &&
+        slot->length <= PAGE_SIZE - slot->offset
+    );
+}
+
+DBStatus page_validate(const uint8_t *page_bytes) {
+    if (page_bytes == NULL) {
+        return DB_ERROR;
+    }
+
+    PageHeader header;
+    page_read_header(page_bytes, &header);
+
+    if (!page_header_is_valid(&header)) {
+        return DB_ERROR;
+    }
+
+    for (uint16_t i = 0; i < header.slot_count; i++) {
+        PageSlot slot;
+        page_read_slot(page_bytes, i, &slot);
+
+        if (!page_slot_is_valid(&header, &slot)) {
+            return DB_ERROR;
+        }
+    }
+
+    return DB_OK;
+}
+
 static bool page_find_deleted_slot(
     const uint8_t *page_bytes,
     const PageHeader *header,
@@ -114,10 +171,14 @@ DBStatus page_insert(
         return DB_ERROR;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return DB_ERROR;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
 
-    if (header.page_type != PAGE_TYPE_DATA) {
+    if (!page_header_is_valid(&header)) {
         return DB_ERROR;
     }
 
@@ -190,10 +251,14 @@ DBStatus page_next_insert_slot(
         return DB_ERROR;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return DB_ERROR;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
 
-    if (header.page_type != PAGE_TYPE_DATA) {
+    if (!page_header_is_valid(&header)) {
         return DB_ERROR;
     }
 
@@ -229,10 +294,14 @@ DBStatus page_get(
         return DB_ERROR;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return DB_ERROR;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
 
-    if (header.page_type != PAGE_TYPE_DATA) {
+    if (!page_header_is_valid(&header)) {
         return DB_ERROR;
     }
 
@@ -251,11 +320,7 @@ DBStatus page_get(
      * Make sure the slot points to bytes inside the page.
      * This protects us from reading corrupted slot metadata.
      */
-    if (
-        slot.offset >= PAGE_SIZE ||
-        slot.length == 0 ||
-        slot.offset + slot.length > PAGE_SIZE
-    ) {
+    if (!page_slot_is_valid(&header, &slot)) {
         return DB_ERROR;
     }
 
@@ -280,10 +345,14 @@ DBStatus page_update(
         return DB_ERROR;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return DB_ERROR;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
 
-    if (header.page_type != PAGE_TYPE_DATA) {
+    if (!page_header_is_valid(&header)) {
         return DB_ERROR;
     }
 
@@ -298,11 +367,7 @@ DBStatus page_update(
         return DB_NOT_FOUND;
     }
 
-    if (
-        slot.offset >= PAGE_SIZE ||
-        slot.length == 0 ||
-        slot.offset + slot.length > PAGE_SIZE
-    ) {
+    if (!page_slot_is_valid(&header, &slot)) {
         return DB_ERROR;
     }
 
@@ -326,10 +391,14 @@ DBStatus page_delete(uint8_t *page_bytes, uint16_t slot_id) {
         return DB_ERROR;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return DB_ERROR;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
 
-    if (header.page_type != PAGE_TYPE_DATA) {
+    if (!page_header_is_valid(&header)) {
         return DB_ERROR;
     }
 
@@ -359,10 +428,14 @@ uint32_t page_free_space(const uint8_t *page_bytes) {
         return 0;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return 0;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
 
-    if (header.free_end < header.free_start) {
+    if (!page_header_is_valid(&header)) {
         return 0;
     }
 
@@ -379,10 +452,14 @@ uint32_t page_insertable_space(const uint8_t *page_bytes) {
         return 0;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return 0;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
 
-    if (header.page_type != PAGE_TYPE_DATA) {
+    if (!page_header_is_valid(&header)) {
         return 0;
     }
 
@@ -405,8 +482,16 @@ uint16_t page_slot_count(const uint8_t *page_bytes) {
         return 0;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return 0;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
+
+    if (!page_header_is_valid(&header)) {
+        return 0;
+    }
 
     return header.slot_count;
 }
@@ -416,10 +501,14 @@ bool page_slot_is_active(const uint8_t *page_bytes, uint16_t slot_id) {
         return false;
     }
 
+    if (page_validate(page_bytes) != DB_OK) {
+        return false;
+    }
+
     PageHeader header;
     page_read_header(page_bytes, &header);
 
-    if (header.page_type != PAGE_TYPE_DATA) {
+    if (!page_header_is_valid(&header)) {
         return false;
     }
 
@@ -430,5 +519,5 @@ bool page_slot_is_active(const uint8_t *page_bytes, uint16_t slot_id) {
     PageSlot slot;
     page_read_slot(page_bytes, slot_id, &slot);
 
-    return slot.flags == PAGE_SLOT_ACTIVE;
+    return page_slot_is_valid(&header, &slot) && slot.flags == PAGE_SLOT_ACTIVE;
 }

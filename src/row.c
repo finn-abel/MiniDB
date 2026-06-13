@@ -91,7 +91,11 @@ void row_print(const Row *row, FILE *out) {
     fprintf(out, "]");
 }
 
-static uint32_t row_serialized_size(const Row *row) {
+static DBStatus row_serialized_size(const Row *row, uint32_t *out_size) {
+    if (row == NULL || out_size == NULL) {
+        return DB_ERROR;
+    }
+
     /*
      * The serialized row always starts with the number of values.
      */
@@ -104,24 +108,49 @@ static uint32_t row_serialized_size(const Row *row) {
          * Every value stores a 1-byte type tag first.
          * This tells deserialization whether the value is INT or TEXT.
          */
+        if (size > UINT32_MAX - sizeof(uint8_t)) {
+            return DB_ERROR;
+        }
+
         size += sizeof(uint8_t);
 
         if (value->type == VALUE_INT) {
             /*
              * INT values store one int32_t after the type tag.
              */
+            if (size > UINT32_MAX - sizeof(int32_t)) {
+                return DB_ERROR;
+            }
+
             size += sizeof(int32_t);
         } else if (value->type == VALUE_TEXT) {
             /*
              * TEXT values store their length first, then the raw text bytes.
              * We do not store the null terminator in the serialized format.
              */
+            if (value->text_value == NULL) {
+                return DB_ERROR;
+            }
+
+            size_t text_len = strlen(value->text_value);
+
+            if (
+                text_len > UINT32_MAX ||
+                size > UINT32_MAX - sizeof(uint32_t) ||
+                size + sizeof(uint32_t) > UINT32_MAX - text_len
+            ) {
+                return DB_ERROR;
+            }
+
             size += sizeof(uint32_t);
-            size += (uint32_t)strlen(value->text_value);
+            size += (uint32_t)text_len;
+        } else {
+            return DB_TYPE_ERROR;
         }
     }
 
-    return size;
+    *out_size = size;
+    return DB_OK;
 }
 
 DBStatus row_serialize(Row *row, uint8_t **out_bytes, uint32_t *out_len) {
@@ -137,7 +166,13 @@ DBStatus row_serialize(Row *row, uint8_t **out_bytes, uint32_t *out_len) {
      * First calculate exactly how many bytes the row needs.
      * This lets us allocate one correctly sized buffer.
      */
-    uint32_t total_size = row_serialized_size(row);
+    uint32_t total_size = 0;
+    DBStatus status = row_serialized_size(row, &total_size);
+
+    if (status != DB_OK) {
+        return status;
+    }
+
     uint8_t *bytes = malloc(total_size);
 
     if (bytes == NULL) {
@@ -243,7 +278,7 @@ DBStatus row_deserialize(uint8_t *bytes, uint32_t len, Row *out_row) {
         /*
          * Before reading anything, make sure the type tag exists.
          */
-        if (offset + sizeof(uint8_t) > len) {
+            if (sizeof(uint8_t) > len - offset) {
             row_free(out_row);
             return DB_ERROR;
         }
@@ -260,7 +295,7 @@ DBStatus row_deserialize(uint8_t *bytes, uint32_t len, Row *out_row) {
             /*
              * INT values need exactly sizeof(int32_t) more bytes.
              */
-            if (offset + sizeof(int32_t) > len) {
+            if (sizeof(int32_t) > len - offset) {
                 row_free(out_row);
                 return DB_ERROR;
             }
@@ -275,7 +310,7 @@ DBStatus row_deserialize(uint8_t *bytes, uint32_t len, Row *out_row) {
             /*
              * TEXT values first store a uint32_t length.
              */
-            if (offset + sizeof(uint32_t) > len) {
+            if (sizeof(uint32_t) > len - offset) {
                 row_free(out_row);
                 return DB_ERROR;
             }
@@ -288,7 +323,7 @@ DBStatus row_deserialize(uint8_t *bytes, uint32_t len, Row *out_row) {
             /*
              * Make sure the claimed text length actually fits in the buffer.
              */
-            if (offset + text_len > len) {
+            if (text_len > len - offset) {
                 row_free(out_row);
                 return DB_ERROR;
             }
@@ -298,7 +333,7 @@ DBStatus row_deserialize(uint8_t *bytes, uint32_t len, Row *out_row) {
              * The serialized format does not include the null terminator,
              * so we add one here.
              */
-            char *text = malloc(text_len + 1);
+            char *text = malloc((size_t)text_len + 1);
 
             if (text == NULL) {
                 row_free(out_row);

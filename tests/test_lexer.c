@@ -203,6 +203,14 @@ static void test_lexer_rejects_bang_without_equal(void) {
     assert(lexer_next(&lexer, &token) == DB_PARSE_ERROR);
 }
 
+static void test_lexer_rejects_integer_overflow(void) {
+    Lexer lexer;
+    Token token;
+
+    assert(lexer_init(&lexer, "999999999999999999999999") == DB_OK);
+    assert(lexer_next(&lexer, &token) == DB_PARSE_ERROR);
+}
+
 int main(void) {
     test_lexer_insert_statement();
     test_lexer_create_statement();
@@ -217,6 +225,7 @@ int main(void) {
     test_lexer_rejects_unterminated_string();
     test_lexer_rejects_unknown_character();
     test_lexer_rejects_bang_without_equal();
+    test_lexer_rejects_integer_overflow();
 
     printf("All lexer tests passed.\n");
 

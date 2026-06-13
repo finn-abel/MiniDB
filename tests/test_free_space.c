@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "common.h"
 #include "page.h"
@@ -263,6 +264,27 @@ static void test_free_space_rejects_null_inputs(void) {
     assert(free_space_update(NULL, 0, 1) == DB_ERROR);
 }
 
+static void test_free_space_rebuild_rejects_corrupt_page(void) {
+    const char *path = "test_free_space_corrupt.db";
+    Pager pager;
+    uint8_t page[PAGE_SIZE];
+    uint32_t page_id = 0;
+    PageHeader header;
+
+    cleanup_file(path);
+    assert(page_init(page, 0) == DB_OK);
+    memcpy(&header, page, sizeof(header));
+    header.page_type = PAGE_TYPE_BTREE_LEAF;
+    memcpy(page, &header, sizeof(header));
+
+    assert(pager_open(&pager, path) == DB_OK);
+    assert(pager_allocate_page(&pager, page, &page_id) == DB_OK);
+    assert(pager_close(&pager) == DB_OK);
+    assert(free_space_rebuild(path) == DB_ERROR);
+
+    cleanup_file(path);
+}
+
 int main(void) {
     test_free_space_rebuild_and_find_page();
     test_free_space_rebuild_counts_deleted_slot_space();
@@ -277,6 +299,7 @@ int main(void) {
     test_free_space_rebuild_empty_file();
     test_free_space_find_missing_space();
     test_free_space_rejects_null_inputs();
+    test_free_space_rebuild_rejects_corrupt_page();
 
     printf("All free-space tests passed.\n");
 

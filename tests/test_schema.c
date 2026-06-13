@@ -31,6 +31,15 @@ static void test_schema_init_rejects_empty_table_name(void) {
     assert(schema_init(&schema, "") == DB_ERROR);
 }
 
+static void test_schema_rejects_unsafe_identifiers(void) {
+    Schema schema;
+
+    assert(schema_init(&schema, "../users") == DB_ERROR);
+    assert(schema_init(&schema, "9users") == DB_ERROR);
+    assert(schema_init(&schema, "users") == DB_OK);
+    assert(schema_add_column(&schema, "profile/name", VALUE_TEXT, false, false) == DB_ERROR);
+}
+
 static void test_schema_add_column_int(void) {
     Schema schema;
 
@@ -483,6 +492,7 @@ int main(void) {
     test_schema_init();
     test_schema_init_rejects_null_inputs();
     test_schema_init_rejects_empty_table_name();
+    test_schema_rejects_unsafe_identifiers();
     test_schema_add_column_int();
     test_schema_add_column_text();
     test_schema_add_multiple_columns();
