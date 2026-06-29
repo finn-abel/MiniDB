@@ -111,11 +111,28 @@ make test
 The test target builds each test executable, runs the full suite, and then
 cleans generated binaries and objects.
 
+For the full local verification pass, run:
+
+```sh
+make check
+```
+
+This runs formatting checks, static analysis, the unit suite, and sanitizer
+tests.
+
 To remove build output manually:
 
 ```sh
 make clean
 ```
+
+## Documentation
+
+Additional docs live under `DOCS/`:
+
+- [USAGE](DOCS/USAGE.md)
+- [DEVELOPMENT](DOCS/DEVELOPMENT.md)
+- [ARCHITECTURE](DOCS/ARCHITECTURE.md)
 
 ## Project Layout
 
@@ -139,3 +156,7 @@ Makefile                 Build, run, test, and clean targets
 - Index files are stored under `mydb/indexes/`.
 - The catalog is persisted as `mydb/catalog.db`.
 - The WAL is persisted as `mydb/minidb.wal`.
+
+## License
+
+MiniDB is licensed under the [MIT License](LICENSE).
