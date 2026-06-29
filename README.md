@@ -1,57 +1,93 @@
 # MiniDB
 
-Version: `0.1.2`
+[![CI](https://github.com/finn-abel/MiniDB-C/actions/workflows/ci.yml/badge.svg)](https://github.com/finn-abel/MiniDB-C/actions/workflows/ci.yml)
 
-MiniDB is a small self-contained relational database written in C. It has a
-simple SQL shell, on-disk table/catalog storage, row serialization, buffer pool
-support, primary-key and secondary indexes, and a focused test suite for the
-core database layers.
+MiniDB is a compact relational database engine written in C. It ships as a
+single CLI binary with a SQL shell, persistent on-disk storage, catalog
+metadata, primary and secondary indexes, transactions, and write-ahead logging.
 
-## Features
+Current version: `0.1.2`
 
-- Interactive shell backed by a persistent `mydb/` database directory
-- SQL lexer, parser, binder, planner, and executor pipeline
+## Capabilities
+
+- Persistent database directory under `mydb/`
+- SQL shell with parser, binder, planner, and executor layers
 - `INT` and `TEXT` column types
-- `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
-- Basic column constraints: `PRIMARY KEY` and `NOT NULL`
-- Equality and comparison predicates in `WHERE` clauses
-- Primary-key B+ tree indexes for integer primary keys
-- Explicit secondary indexes with `CREATE INDEX` and `DROP INDEX`
-- Catalog persistence for tables and indexes
-- Write-ahead log support for autocommitted row changes
-- Unit tests for storage, schema, SQL, execution, indexes, and transactions
+- `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, and `DELETE`
+- `CREATE INDEX` and `DROP INDEX`
+- `PRIMARY KEY` and `NOT NULL` constraints
+- Comparison predicates with `=`, `!=`, `>`, `<`, `>=`, and `<=`
+- Primary-key B+ tree indexes
+- Secondary indexes
+- Catalog persistence
+- Write-ahead log recovery path
+- CI-backed checks with formatting, static analysis, unit tests, and sanitizers
 
-## Requirements
+## Install
 
-- A C11 compiler such as `gcc` or `clang`
+Download a binary release for your platform, extract it, and run the installer:
+
+```sh
+tar -xzf MiniDB-0.1.2-<system>-<machine>.tar.gz
+cd MiniDB-0.1.2-<system>-<machine>
+./install.sh
+MiniDB --version
+```
+
+By default, the installer copies `MiniDB` to `/usr/local/bin`. To install
+without elevated permissions, use a user-local prefix:
+
+```sh
+PREFIX="$HOME/.local" ./install.sh
+```
+
+Make sure `$HOME/.local/bin` is on your `PATH` when using a custom prefix.
+
+## Build From Source
+
+Requirements:
+
+- C11 compiler such as `gcc` or `clang`
 - `make`
 
-## Build
+Build and run from a source checkout:
 
 ```sh
 make
-```
-
-This builds the `MiniDB` executable.
-
-## Run
-
-```sh
-make run
-```
-
-or:
-
-```sh
 ./MiniDB
 ```
 
-The shell opens or creates a database at `mydb/`.
-
-Check the installed or built version with:
+Install from source:
 
 ```sh
-./MiniDB --version
+make install
+MiniDB --version
+```
+
+Use a custom install prefix when needed:
+
+```sh
+make install PREFIX="$HOME/.local"
+```
+
+Uninstall from the same prefix:
+
+```sh
+make uninstall PREFIX="$HOME/.local"
+```
+
+## Usage
+
+Start the shell:
+
+```sh
+MiniDB
+```
+
+or, from an uninstalled source checkout:
+
+```sh
+make run
 ```
 
 Example session:
@@ -69,10 +105,10 @@ DELETE FROM users WHERE id = 1;
 .exit
 ```
 
-## Supported SQL
+MiniDB currently accepts one SQL statement per input line. SQL statements end
+with a semicolon. Shell commands start with a dot and do not need a semicolon.
 
-MiniDB currently supports one statement per input line. SQL statements should
-end with a semicolon.
+## Supported SQL
 
 ```sql
 CREATE TABLE table_name (
@@ -95,12 +131,6 @@ UPDATE table_name SET column_name = value
     [WHERE column_name >= value];
 ```
 
-Supported `WHERE` operators:
-
-```text
-=  !=  >  <  >=  <=
-```
-
 Supported shell commands:
 
 ```text
@@ -110,33 +140,30 @@ Supported shell commands:
 .schema <table>
 ```
 
-## Test
+## Verification
 
-```sh
-make test
-```
-
-The test target builds each test executable, runs the full suite, and then
-cleans generated binaries and objects.
-
-For the full local verification pass, run:
+Run the full local verification suite:
 
 ```sh
 make check
 ```
 
-This runs formatting checks, static analysis, the unit suite, and sanitizer
-tests.
+This runs:
 
-To remove build output manually:
+- `make fmt-check`
+- `make analyze`
+- `make test`
+- `make test-asan`
+
+Run only the unit suite:
 
 ```sh
-make clean
+make test
 ```
 
-## Download
+## Releases
 
-To create a production-style source archive and runnable binary archive:
+Create source and binary release archives:
 
 ```sh
 make release
@@ -149,81 +176,47 @@ dist/MiniDB-0.1.2.tar.gz
 dist/MiniDB-0.1.2-<system>-<machine>.tar.gz
 ```
 
-To create only the source archive:
+Create only the source archive:
 
 ```sh
 make dist
 ```
 
-This writes `dist/MiniDB-0.1.2.tar.gz`. The archive includes the source,
-headers, tests, documentation, CI workflow, formatter config, and license.
-
-To create only the runnable binary archive:
+Create only the binary archive:
 
 ```sh
 make package
 ```
 
-The binary archive includes `bin/MiniDB` and an `install.sh` helper. On a
-compatible system, install it onto `PATH` and run it like a normal command:
-
-```sh
-tar -xzf MiniDB-0.1.2-<system>-<machine>.tar.gz
-cd MiniDB-0.1.2-<system>-<machine>
-./install.sh
-MiniDB --version
-MiniDB
-```
-
-You can still run it directly without installing by using
-`./bin/MiniDB --version`.
-
-See [RELEASE](DOCS/RELEASE.md) for how the install target makes
-`MiniDB --version` work from any directory.
-
-To install from source:
-
-```sh
-make install
-```
-
-To remove generated release archives:
+Remove generated release artifacts:
 
 ```sh
 make clean-dist
 ```
 
-## Documentation
+## Runtime Files
 
-Additional docs live under `DOCS/`:
+The default database path is `mydb/`.
+
+```text
+mydb/
+  catalog.db
+  minidb.wal
+  tables/
+    table_name.tbl
+  indexes/
+    table_name_pk.btree
+    index_name.sidx
+```
+
+Runtime database files are local state and should not be committed.
+
+## Documentation
 
 - [USAGE](DOCS/USAGE.md)
 - [DEVELOPMENT](DOCS/DEVELOPMENT.md)
 - [ARCHITECTURE](DOCS/ARCHITECTURE.md)
 - [RELEASE](DOCS/RELEASE.md)
-
-## Project Layout
-
-```text
-include/                 Public headers
-src/                     Database implementation
-src/sql/                 Lexer, parser, binder, and AST
-src/execution/           Planner and executor
-src/buffer/              Buffer pool and replacement policy
-src/index/               B+ tree and secondary index support
-src/storage/             Free-space management
-src/transaction/         Transaction state and WAL
-tests/                   Unit tests
-Makefile                 Build, run, test, and clean targets
-```
-
-## Notes
-
-- The default CLI database path is `mydb/`.
-- Table files are stored under `mydb/tables/`.
-- Index files are stored under `mydb/indexes/`.
-- The catalog is persisted as `mydb/catalog.db`.
-- The WAL is persisted as `mydb/minidb.wal`.
 
 ## License
 
