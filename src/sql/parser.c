@@ -668,7 +668,6 @@ static DBStatus parser_parse_select(Parser *parser, Statement *out_statement) {
     uint16_t selected_column_count = 0;
     char table_name[MAX_TABLE_NAME];
     WhereCondition condition;
-    bool condition_initialized = false;
     DBStatus status;
 
     status = ast_statement_init(out_statement, STATEMENT_SELECT);
@@ -765,22 +764,16 @@ static DBStatus parser_parse_select(Parser *parser, Statement *out_statement) {
             return status;
         }
 
-        condition_initialized = true;
         /*
          * ast_select_set_where deep-copies the condition, so the temporary
          * parsed condition can be released immediately afterward.
          */
         status = ast_select_set_where(&out_statement->select, &condition);
         ast_where_free(&condition);
-        condition_initialized = false;
 
         if (status != DB_OK) {
             return status;
         }
-    }
-
-    if (condition_initialized) {
-        ast_where_free(&condition);
     }
 
     return parser_finish_statement(parser);
@@ -793,7 +786,6 @@ static DBStatus parser_parse_select(Parser *parser, Statement *out_statement) {
 static DBStatus parser_parse_delete(Parser *parser, Statement *out_statement) {
     char table_name[MAX_TABLE_NAME];
     WhereCondition condition;
-    bool condition_initialized = false;
     DBStatus status;
 
     status = ast_statement_init(out_statement, STATEMENT_DELETE);
@@ -839,22 +831,16 @@ static DBStatus parser_parse_delete(Parser *parser, Statement *out_statement) {
             return status;
         }
 
-        condition_initialized = true;
         /*
          * ast_delete_set_where deep-copies the condition, so the temporary
          * parsed condition can be released immediately afterward.
          */
         status = ast_delete_set_where(&out_statement->delete_statement, &condition);
         ast_where_free(&condition);
-        condition_initialized = false;
 
         if (status != DB_OK) {
             return status;
         }
-    }
-
-    if (condition_initialized) {
-        ast_where_free(&condition);
     }
 
     return parser_finish_statement(parser);
@@ -869,7 +855,6 @@ static DBStatus parser_parse_update(Parser *parser, Statement *out_statement) {
     char column_name[MAX_COLUMN_NAME];
     Value value;
     WhereCondition condition;
-    bool condition_initialized = false;
     DBStatus status;
 
     status = ast_statement_init(out_statement, STATEMENT_UPDATE);
@@ -940,22 +925,16 @@ static DBStatus parser_parse_update(Parser *parser, Statement *out_statement) {
             return status;
         }
 
-        condition_initialized = true;
         /*
          * ast_update_set_where owns its own copy, so the temporary condition
          * can be freed immediately after the assignment.
          */
         status = ast_update_set_where(&out_statement->update, &condition);
         ast_where_free(&condition);
-        condition_initialized = false;
 
         if (status != DB_OK) {
             return status;
         }
-    }
-
-    if (condition_initialized) {
-        ast_where_free(&condition);
     }
 
     return parser_finish_statement(parser);

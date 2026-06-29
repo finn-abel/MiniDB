@@ -51,7 +51,7 @@ static void test_status_default_message(void) {
 
 static void test_error_print(void) {
     DBError error;
-    char buffer[128];
+    char buffer[128] = "";
     FILE *out = fmemopen(buffer, sizeof(buffer), "w");
 
     assert(out != NULL);
@@ -66,7 +66,7 @@ static void test_error_print(void) {
 
 static void test_error_print_ignores_ok(void) {
     DBError error;
-    char buffer[128];
+    char buffer[128] = "";
     FILE *out = fmemopen(buffer, sizeof(buffer), "w");
 
     assert(out != NULL);
