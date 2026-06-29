@@ -3,6 +3,18 @@ CFLAGS = -Wall -Wextra -Werror -std=c11 -g
 INCLUDES = -Iinclude
 
 TARGET = MiniDB
+VERSION = 0.1.2
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+DIST_DIR = dist
+DIST_NAME = $(TARGET)-$(VERSION)
+DIST_ARCHIVE = $(DIST_DIR)/$(DIST_NAME).tar.gz
+DIST_FILES = Makefile README.md LICENSE VERSION .clang-format .gitignore .github DOCS include src tests
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+PACKAGE_NAME = $(TARGET)-$(VERSION)-$(UNAME_S)-$(UNAME_M)
+PACKAGE_ARCHIVE = $(DIST_DIR)/$(PACKAGE_NAME).tar.gz
+PACKAGE_FILES = README.md LICENSE VERSION DOCS scripts
 
 # Add normal project source files here.
 SRC = src/main.c src/db.c src/value.c src/row.c src/rid.c src/page.c src/pager.c \
@@ -39,7 +51,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) -DMINIDB_VERSION=\"$(VERSION)\" -c $< -o $@
 
 %: tests/%.o $(TEST_SUPPORT_OBJ)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^
@@ -104,6 +116,39 @@ check:
 	$(MAKE) test
 	$(MAKE) test-asan
 
+dist:
+	$(MAKE) clean
+	rm -rf "$(DIST_DIR)/$(DIST_NAME)"
+	mkdir -p "$(DIST_DIR)/$(DIST_NAME)"
+	cp -R $(DIST_FILES) "$(DIST_DIR)/$(DIST_NAME)/"
+	tar -czf "$(DIST_ARCHIVE)" -C "$(DIST_DIR)" "$(DIST_NAME)"
+	rm -rf "$(DIST_DIR)/$(DIST_NAME)"
+	@echo "Created $(DIST_ARCHIVE)"
+
+package: $(TARGET)
+	rm -rf "$(DIST_DIR)/$(PACKAGE_NAME)"
+	mkdir -p "$(DIST_DIR)/$(PACKAGE_NAME)/bin"
+	cp "$(TARGET)" "$(DIST_DIR)/$(PACKAGE_NAME)/bin/"
+	cp -R $(PACKAGE_FILES) "$(DIST_DIR)/$(PACKAGE_NAME)/"
+	mv "$(DIST_DIR)/$(PACKAGE_NAME)/scripts/install-binary.sh" "$(DIST_DIR)/$(PACKAGE_NAME)/install.sh"
+	rm -rf "$(DIST_DIR)/$(PACKAGE_NAME)/scripts"
+	chmod 0755 "$(DIST_DIR)/$(PACKAGE_NAME)/install.sh"
+	tar -czf "$(PACKAGE_ARCHIVE)" -C "$(DIST_DIR)" "$(PACKAGE_NAME)"
+	rm -rf "$(DIST_DIR)/$(PACKAGE_NAME)"
+	@echo "Created $(PACKAGE_ARCHIVE)"
+
+release: check dist package
+
+clean-dist:
+	rm -rf "$(DIST_DIR)"
+
+install: $(TARGET)
+	install -d "$(DESTDIR)$(BINDIR)"
+	install -m 0755 "$(TARGET)" "$(DESTDIR)$(BINDIR)/$(TARGET)"
+
+uninstall:
+	rm -f "$(DESTDIR)$(BINDIR)/$(TARGET)"
+
 clean:
 	rm -f $(OBJ) $(TEST_SUPPORT_OBJ) $(TEST_OBJ) $(TARGET) $(TEST_TARGETS)
 	rm -rf *.dSYM tests/*.dSYM
@@ -111,4 +156,4 @@ clean:
 run: $(TARGET)
 	./$(TARGET)
 
-.PHONY: all clean run test test-asan fmt fmt-check analyze check
+.PHONY: all clean clean-dist run test test-asan fmt fmt-check analyze check dist package release install uninstall

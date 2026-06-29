@@ -11,6 +11,12 @@ make fmt
 make fmt-check
 make analyze
 make check
+make dist
+make package
+make release
+make install
+make uninstall
+make clean-dist
 make clean
 ```
 
@@ -72,3 +78,48 @@ function. The Makefile handles this with `TEST_SUPPORT_SRC`, which filters
 
 Continuous integration should run `make check` from a clean checkout. That
 keeps local verification and CI aligned.
+
+## Release Archives
+
+The project version is `0.1.2`, stored in `VERSION` and mirrored by the
+Makefile's `VERSION` variable.
+
+```sh
+make release
+```
+
+This runs the full check suite and creates both release artifacts.
+
+```sh
+make dist
+```
+
+This creates:
+
+```text
+dist/MiniDB-0.1.2.tar.gz
+```
+
+The archive contains source, headers, tests, documentation, CI workflow,
+formatter config, and the MIT license. Generated archives are ignored by git.
+
+```sh
+make package
+```
+
+This creates a runnable binary archive for the current system:
+
+```text
+dist/MiniDB-0.1.2-<system>-<machine>.tar.gz
+```
+
+The binary archive contains `bin/MiniDB`, docs, license, version metadata, and
+an `install.sh` helper. It can be extracted and installed on a compatible
+machine without compiling from source; after installation, users can run
+`MiniDB --version` directly from the terminal.
+
+To remove release archives:
+
+```sh
+make clean-dist
+```

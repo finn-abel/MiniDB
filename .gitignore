@@ -2,6 +2,8 @@
 *.o
 *.out
 *.dSYM/
+dist/
+*.tar.gz
 
 # Executables
 MiniDB

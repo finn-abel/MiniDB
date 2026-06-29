@@ -12,6 +12,20 @@
 #include "sql/parser.h"
 #include "util/error.h"
 
+#ifndef MINIDB_VERSION
+#define MINIDB_VERSION "unknown"
+#endif
+
+static void print_version(void) {
+    printf("MiniDB %s\n", MINIDB_VERSION);
+}
+
+static void print_usage(const char *program_name) {
+    printf("Usage: %s [--help] [--version]\n", program_name);
+    printf("\n");
+    printf("Without options, starts the MiniDB shell using ./mydb.\n");
+}
+
 static void print_prompt(void) {
     /*
      * Keep the prompt short because query output may print multiple rows.
@@ -388,11 +402,31 @@ static DBStatus execute_input(
     return status;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     DB db;
     DBError error;
     char input[MAX_INPUT_SIZE];
     bool should_exit = false;
+
+    if (argc > 2) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    if (argc == 2) {
+        if (strcmp(argv[1], "--version") == 0) {
+            print_version();
+            return 0;
+        }
+
+        if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+
+        print_usage(argv[0]);
+        return 1;
+    }
 
     db_error_clear(&error);
 

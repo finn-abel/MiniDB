@@ -27,6 +27,37 @@ or:
 
 By default, the shell opens or creates a database under `mydb/`.
 
+To print the version:
+
+```sh
+./MiniDB --version
+```
+
+## Install
+
+From a source checkout:
+
+```sh
+make
+make install
+```
+
+The default install prefix is `/usr/local`. Override it with:
+
+```sh
+make install PREFIX="$HOME/.local"
+```
+
+To uninstall from the same prefix:
+
+```sh
+make uninstall PREFIX="$HOME/.local"
+```
+
+After install, `MiniDB --version` works because `make install` copies the
+binary into a `bin` directory on your shell's `PATH`. See
+[RELEASE](RELEASE.md) for the full explanation.
+
 ## Example Session
 
 ```sql

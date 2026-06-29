@@ -1,5 +1,7 @@
 # MiniDB
 
+Version: `0.1.2`
+
 MiniDB is a small self-contained relational database written in C. It has a
 simple SQL shell, on-disk table/catalog storage, row serialization, buffer pool
 support, primary-key and secondary indexes, and a focused test suite for the
@@ -45,6 +47,12 @@ or:
 ```
 
 The shell opens or creates a database at `mydb/`.
+
+Check the installed or built version with:
+
+```sh
+./MiniDB --version
+```
 
 Example session:
 
@@ -126,6 +134,65 @@ To remove build output manually:
 make clean
 ```
 
+## Download
+
+To create a production-style source archive and runnable binary archive:
+
+```sh
+make release
+```
+
+This runs `make check`, then writes:
+
+```text
+dist/MiniDB-0.1.2.tar.gz
+dist/MiniDB-0.1.2-<system>-<machine>.tar.gz
+```
+
+To create only the source archive:
+
+```sh
+make dist
+```
+
+This writes `dist/MiniDB-0.1.2.tar.gz`. The archive includes the source,
+headers, tests, documentation, CI workflow, formatter config, and license.
+
+To create only the runnable binary archive:
+
+```sh
+make package
+```
+
+The binary archive includes `bin/MiniDB` and an `install.sh` helper. On a
+compatible system, install it onto `PATH` and run it like a normal command:
+
+```sh
+tar -xzf MiniDB-0.1.2-<system>-<machine>.tar.gz
+cd MiniDB-0.1.2-<system>-<machine>
+./install.sh
+MiniDB --version
+MiniDB
+```
+
+You can still run it directly without installing by using
+`./bin/MiniDB --version`.
+
+See [RELEASE](DOCS/RELEASE.md) for how the install target makes
+`MiniDB --version` work from any directory.
+
+To install from source:
+
+```sh
+make install
+```
+
+To remove generated release archives:
+
+```sh
+make clean-dist
+```
+
 ## Documentation
 
 Additional docs live under `DOCS/`:
@@ -133,6 +200,7 @@ Additional docs live under `DOCS/`:
 - [USAGE](DOCS/USAGE.md)
 - [DEVELOPMENT](DOCS/DEVELOPMENT.md)
 - [ARCHITECTURE](DOCS/ARCHITECTURE.md)
+- [RELEASE](DOCS/RELEASE.md)
 
 ## Project Layout
 
