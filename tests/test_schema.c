@@ -475,10 +475,7 @@ static void test_schema_print_with_columns(void) {
     schema_print(&schema, out);
     fclose(out);
 
-    assert(strcmp(
-        buffer,
-        "users (id INT PRIMARY KEY NOT NULL, name TEXT NOT NULL, age INT)"
-    ) == 0);
+    assert(strcmp(buffer, "users (id INT PRIMARY KEY NOT NULL, name TEXT NOT NULL, age INT)") == 0);
 }
 
 static void test_schema_print_null_inputs(void) {

@@ -103,13 +103,7 @@ static void test_secondary_index_build_and_scan_duplicate_int_keys(void) {
     assert(secondary_index_build(index_file, table_file, &schema, &age_column, 1) == DB_OK);
     assert(ast_where_init(&condition, "age", SQL_OPERATOR_EQUAL, &age) == DB_OK);
 
-    assert(secondary_index_scan_condition(
-        index_file,
-        0,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_OK);
+    assert(secondary_index_scan_condition(index_file, 0, &condition, collect_rid_callback, &list) == DB_OK);
 
     assert(list.count == 2);
     assert(rid_list_contains(&list, alex));
@@ -142,13 +136,7 @@ static void test_secondary_index_scan_text_key(void) {
     assert(secondary_index_build(index_file, table_file, &schema, &name_column, 1) == DB_OK);
     assert(ast_where_init(&condition, "name", SQL_OPERATOR_EQUAL, &name) == DB_OK);
 
-    assert(secondary_index_scan_condition(
-        index_file,
-        0,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_OK);
+    assert(secondary_index_scan_condition(index_file, 0, &condition, collect_rid_callback, &list) == DB_OK);
 
     assert(list.count == 1);
     assert(rid_list_contains(&list, finn));
@@ -181,13 +169,7 @@ static void test_secondary_index_scan_range_key(void) {
     assert(secondary_index_build(index_file, table_file, &schema, &age_column, 1) == DB_OK);
     assert(ast_where_init(&condition, "age", SQL_OPERATOR_GREATER_EQUAL, &age) == DB_OK);
 
-    assert(secondary_index_scan_condition(
-        index_file,
-        0,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_OK);
+    assert(secondary_index_scan_condition(index_file, 0, &condition, collect_rid_callback, &list) == DB_OK);
 
     assert(list.count == 1);
     assert(rid_list_contains(&list, finn));
@@ -220,13 +202,7 @@ static void test_secondary_index_scan_composite_second_column(void) {
     assert(secondary_index_build(index_file, table_file, &schema, columns, 2) == DB_OK);
     assert(ast_where_init(&condition, "name", SQL_OPERATOR_EQUAL, &name) == DB_OK);
 
-    assert(secondary_index_scan_condition(
-        index_file,
-        1,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_OK);
+    assert(secondary_index_scan_condition(index_file, 1, &condition, collect_rid_callback, &list) == DB_OK);
 
     assert(list.count == 1);
     assert(rid_list_contains(&list, sam));
@@ -285,41 +261,11 @@ static void test_secondary_index_scan_rejects_invalid_inputs(void) {
     assert(secondary_index_build(index_file, table_file, &schema, &age_column, 1) == DB_OK);
     assert(ast_where_init(&condition, "age", SQL_OPERATOR_EQUAL, &age) == DB_OK);
 
-    assert(secondary_index_scan_condition(
-        NULL,
-        0,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_ERROR);
-    assert(secondary_index_scan_condition(
-        index_file,
-        0,
-        NULL,
-        collect_rid_callback,
-        &list
-    ) == DB_ERROR);
-    assert(secondary_index_scan_condition(
-        index_file,
-        0,
-        &condition,
-        NULL,
-        &list
-    ) == DB_ERROR);
-    assert(secondary_index_scan_condition(
-        "test_secondary_missing.sidx",
-        0,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_IO_ERROR);
-    assert(secondary_index_scan_condition(
-        index_file,
-        1,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_ERROR);
+    assert(secondary_index_scan_condition(NULL, 0, &condition, collect_rid_callback, &list) == DB_ERROR);
+    assert(secondary_index_scan_condition(index_file, 0, NULL, collect_rid_callback, &list) == DB_ERROR);
+    assert(secondary_index_scan_condition(index_file, 0, &condition, NULL, &list) == DB_ERROR);
+    assert(secondary_index_scan_condition("test_secondary_missing.sidx", 0, &condition, collect_rid_callback, &list) == DB_IO_ERROR);
+    assert(secondary_index_scan_condition(index_file, 1, &condition, collect_rid_callback, &list) == DB_ERROR);
 
     ast_where_free(&condition);
     cleanup_file(table_file);
@@ -346,13 +292,7 @@ static void test_secondary_index_scan_no_matches(void) {
     assert(secondary_index_build(index_file, table_file, &schema, &age_column, 1) == DB_OK);
     assert(ast_where_init(&condition, "age", SQL_OPERATOR_EQUAL, &age) == DB_OK);
 
-    assert(secondary_index_scan_condition(
-        index_file,
-        0,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_OK);
+    assert(secondary_index_scan_condition(index_file, 0, &condition, collect_rid_callback, &list) == DB_OK);
 
     assert(list.count == 0);
 
@@ -380,13 +320,7 @@ static void test_secondary_index_scan_propagates_callback_error(void) {
     assert(secondary_index_build(index_file, table_file, &schema, &age_column, 1) == DB_OK);
     assert(ast_where_init(&condition, "age", SQL_OPERATOR_EQUAL, &age) == DB_OK);
 
-    assert(secondary_index_scan_condition(
-        index_file,
-        0,
-        &condition,
-        failing_rid_callback,
-        NULL
-    ) == DB_ERROR);
+    assert(secondary_index_scan_condition(index_file, 0, &condition, failing_rid_callback, NULL) == DB_ERROR);
 
     ast_where_free(&condition);
     cleanup_file(table_file);
@@ -424,13 +358,7 @@ static void test_secondary_index_scan_rejects_oversized_text(void) {
 
     assert(value_text(&name, "Finn") == DB_OK);
     assert(ast_where_init(&condition, "name", SQL_OPERATOR_EQUAL, &name) == DB_OK);
-    assert(secondary_index_scan_condition(
-        index_file,
-        0,
-        &condition,
-        collect_rid_callback,
-        &list
-    ) == DB_ERROR);
+    assert(secondary_index_scan_condition(index_file, 0, &condition, collect_rid_callback, &list) == DB_ERROR);
 
     ast_where_free(&condition);
     value_free(&name);

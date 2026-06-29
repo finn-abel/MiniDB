@@ -598,9 +598,7 @@ static DBStatus executor_build_updated_row(
     }
 
     for (uint16_t i = 0; i < source->value_count; i++) {
-        const Value *value = (i == set_column_index) ?
-            set_value :
-            row_get_value_const(source, i);
+        const Value *value = (i == set_column_index) ? set_value : row_get_value_const(source, i);
 
         if (value == NULL) {
             row_free(out_row);
@@ -742,7 +740,6 @@ static DBStatus executor_update_callback(const Row *row, RID rid, void *context)
                 );
             }
         }
-
     }
 
     row_free(&updated_row);
@@ -955,7 +952,6 @@ static DBStatus executor_execute_insert(DB *db, const InsertPlan *plan) {
     if (has_primary_key) {
         index_close_status = btree_close(&primary_key_index);
     }
-
 
     DBStatus close_status = table_close(&table);
 

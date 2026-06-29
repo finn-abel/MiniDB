@@ -87,11 +87,7 @@ static void test_transaction_execute_autocommit_commits_success(void) {
     context.status = DB_OK;
 
     assert(transaction_init(&transaction) == DB_OK);
-    assert(transaction_execute_autocommit(
-        &transaction,
-        test_callback,
-        &context
-    ) == DB_OK);
+    assert(transaction_execute_autocommit(&transaction, test_callback, &context) == DB_OK);
 
     assert(context.was_called == true);
     assert(transaction.id == 0);
@@ -106,11 +102,7 @@ static void test_transaction_execute_autocommit_rolls_back_failure(void) {
     context.status = DB_NOT_FOUND;
 
     assert(transaction_init(&transaction) == DB_OK);
-    assert(transaction_execute_autocommit(
-        &transaction,
-        test_callback,
-        &context
-    ) == DB_NOT_FOUND);
+    assert(transaction_execute_autocommit(&transaction, test_callback, &context) == DB_NOT_FOUND);
 
     assert(context.was_called == true);
     assert(transaction.id == 0);
@@ -139,11 +131,7 @@ static void test_transaction_execute_autocommit_rejects_manual_mode(void) {
     assert(transaction_init(&transaction) == DB_OK);
     transaction.autocommit = false;
 
-    assert(transaction_execute_autocommit(
-        &transaction,
-        test_callback,
-        &context
-    ) == DB_ERROR);
+    assert(transaction_execute_autocommit(&transaction, test_callback, &context) == DB_ERROR);
     assert(context.was_called == false);
     assert(transaction.state == TRANSACTION_STATE_IDLE);
 }

@@ -21,11 +21,5 @@ jobs:
           gcc --version
           make --version
 
-      - name: Build MiniDB
-        run: make
-
-      - name: Clean build output
-        run: make clean
-
-      - name: Run test suite
-        run: make test
+      - name: Run checks
+        run: make check

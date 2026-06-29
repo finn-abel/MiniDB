@@ -67,8 +67,7 @@ static void test_serialize_deserialize_empty_row(void) {
 
 static void test_deserialize_rejects_truncated_data(void) {
     uint8_t bad_bytes[] = {
-        1, 0,
-        VALUE_INT
+        1, 0, VALUE_INT
     };
 
     Row row;

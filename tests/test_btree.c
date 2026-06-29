@@ -313,18 +313,8 @@ static void test_btree_split_helpers_reject_invalid_pages(void) {
     cleanup_file(path);
 
     assert(btree_open(&tree, path) == DB_OK);
-    assert(btree_split_leaf(
-        &tree,
-        BTREE_ROOT_PAGE_ID,
-        &separator_key,
-        &right_page_id
-    ) == DB_ERROR);
-    assert(btree_split_internal(
-        &tree,
-        BTREE_ROOT_PAGE_ID,
-        &separator_key,
-        &right_page_id
-    ) == DB_ERROR);
+    assert(btree_split_leaf(&tree, BTREE_ROOT_PAGE_ID, &separator_key, &right_page_id) == DB_ERROR);
+    assert(btree_split_internal(&tree, BTREE_ROOT_PAGE_ID, &separator_key, &right_page_id) == DB_ERROR);
     assert(btree_close(&tree) == DB_OK);
 
     cleanup_file(path);

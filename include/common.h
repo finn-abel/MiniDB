@@ -60,10 +60,10 @@ static inline bool db_identifier_is_valid(const char *name, size_t buffer_size) 
     char first = name[0];
 
     if (!(
-        (first >= 'A' && first <= 'Z') ||
-        (first >= 'a' && first <= 'z') ||
-        first == '_'
-    )) {
+            (first >= 'A' && first <= 'Z') ||
+            (first >= 'a' && first <= 'z') ||
+            first == '_'
+        )) {
         return false;
     }
 
@@ -77,11 +77,11 @@ static inline bool db_identifier_is_valid(const char *name, size_t buffer_size) 
         }
 
         if (!(
-            (current >= 'A' && current <= 'Z') ||
-            (current >= 'a' && current <= 'z') ||
-            (current >= '0' && current <= '9') ||
-            current == '_'
-        )) {
+                (current >= 'A' && current <= 'Z') ||
+                (current >= 'a' && current <= 'z') ||
+                (current >= '0' && current <= '9') ||
+                current == '_'
+            )) {
             return false;
         }
     }

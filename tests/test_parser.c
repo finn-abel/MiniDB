@@ -29,10 +29,7 @@ static void test_parser_create_table(void) {
 static void test_parser_create_table_with_constraints(void) {
     Statement statement;
 
-    assert(parser_parse(
-        "CREATE TABLE users (id INT PRIMARY KEY, name TEXT NOT NULL);",
-        &statement
-    ) == DB_OK);
+    assert(parser_parse("CREATE TABLE users (id INT PRIMARY KEY, name TEXT NOT NULL);", &statement) == DB_OK);
 
     assert(statement.type == STATEMENT_CREATE_TABLE);
     assert(statement.create_table.column_count == 2);
@@ -266,15 +263,9 @@ static void test_parser_rejects_bad_create_type(void) {
 static void test_parser_rejects_bad_column_constraint(void) {
     Statement statement;
 
-    assert(parser_parse(
-        "CREATE TABLE users (id INT PRIMARY);",
-        &statement
-    ) == DB_PARSE_ERROR);
+    assert(parser_parse("CREATE TABLE users (id INT PRIMARY);", &statement) == DB_PARSE_ERROR);
 
-    assert(parser_parse(
-        "CREATE TABLE users (id INT NOT);",
-        &statement
-    ) == DB_PARSE_ERROR);
+    assert(parser_parse("CREATE TABLE users (id INT NOT);", &statement) == DB_PARSE_ERROR);
 }
 
 static void test_parser_rejects_empty_create_columns(void) {

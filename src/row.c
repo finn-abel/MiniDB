@@ -278,7 +278,7 @@ DBStatus row_deserialize(uint8_t *bytes, uint32_t len, Row *out_row) {
         /*
          * Before reading anything, make sure the type tag exists.
          */
-            if (sizeof(uint8_t) > len - offset) {
+        if (sizeof(uint8_t) > len - offset) {
             row_free(out_row);
             return DB_ERROR;
         }

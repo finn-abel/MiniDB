@@ -67,7 +67,7 @@ DBStatus row_serialize(Row *row, uint8_t **out_bytes, uint32_t *out_len);
  * Converts a byte buffer back into a Row.
  *
  * The output row owns its values after this succeeds.
- * 
+ *
  * The caller must later call row_free on out_row.
  */
 DBStatus row_deserialize(uint8_t *bytes, uint32_t len, Row *out_row);
